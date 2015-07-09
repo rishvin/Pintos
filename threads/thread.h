@@ -5,6 +5,8 @@
 #include <list.h>
 #include <stdint.h>
 
+struct lock;
+
 /* States in a thread's life cycle. */
 enum thread_status
   {
@@ -23,6 +25,15 @@ typedef int tid_t;
 #define PRI_MIN 0                       /* Lowest priority. */
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
+
+/* Max Lock limit by thread. */
+#define MAX_HOLD_LOCKS 32
+
+struct hold_lock
+{
+    struct lock *lck;
+    int priority;
+};
 
 /* A kernel thread or user process.
 
@@ -91,12 +102,14 @@ struct thread
     
     int64_t sleep_time;                  /* Maintains the sleep time. */    
     int is_waiting;                     /* Check if the thread is waiting or not. */
+    int saved_priority;                 /* This will be use in case of priority inversion, it will restore the original priority. */
     
+    struct hold_lock hold_locks[MAX_HOLD_LOCKS];
+    int hold_locks_bitmap;
     struct list_elem allelem;           /* List element for all threads list. */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
-
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
@@ -144,9 +157,16 @@ int thread_get_load_avg (void);
 
 void thread_on_tick(struct thread *t, void *aux);
 
-/* Interfaces related to priority_queue */
+/* Interfaces related to priority_queue. */
 void thread_init_priority_queue(void);
 void thread_push_to_priority_queue(struct thread *t);
 struct thread* thread_pop_from_priority_queue(void);
+void thread_update_priority_queue(struct thread *t, int new_priority);
+
+/* Interface related to priority inversion. */
+uint8_t thread_insert_hold_lock(struct thread *t, struct lock *lck, int priority);
+void thread_remove_hold_lock(struct thread *t, struct lock *lck);
+int thread_get_next_priority(struct thread *t);
+void thread_update_hold_lock(struct thread *t, struct lock *lck, int priority);
 
 #endif /* threads/thread.h */

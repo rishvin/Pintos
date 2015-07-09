@@ -119,7 +119,7 @@ sema_up (struct semaphore *sema)
   {
     struct thread *t = list_entry (list_pop_front (&sema->waiters),
                                 struct thread, elem);
-    t->is_waiting = 0;                             
+    t->is_waiting = 0;
     thread_unblock (t);
   }
   sema->value++;
@@ -162,7 +162,7 @@ sema_test_helper (void *sema_)
       sema_up (&sema[1]);
     }
 }
-
+
 /* Initializes LOCK.  A lock can be held by at most a single
    thread at any given time.  Our locks are not "recursive", that
    is, it is an error for the thread currently holding a lock to
@@ -187,6 +187,54 @@ lock_init (struct lock *lock)
   sema_init (&lock->semaphore, 1);
 }
 
+/* These function tries to fix priority inversion by donating the priority to 
+   the thread involved with this lock.
+   It tries to loop throught the thread waiting list till it find the thread who's
+   priority is either greater than or equal to hi_priority value.
+   
+   Also we need to make sure that the thread who is current holding the lock may have been
+   yielded by higher priority thread. In which case we need to update holder locker thread
+   priority. There may also be the scenario where the locker holder thread may be in sleep state,
+   and in which case the thread may no be in priority queue. So we need to make the check that 
+   the thread is in READY state or not and if it is in ready state then update the priority queue.
+   We dont need to explicitly call the thread yield() or schedule function as it will be implicitly
+   call when the new thread is going to acquire the lock.
+*/
+
+static int8_t lock_update_priority(struct lock *lck, struct thread *t, void *aux)
+{
+    int *priority = (int*)aux;
+    if(t->priority < *priority)
+    {
+        thread_update_hold_lock(t, lck, *priority);
+        if(t->status == THREAD_READY)
+            thread_update_priority_queue(t, *priority);
+        t->priority = *priority;
+        return 1;
+    }
+    else
+        return 0;
+}
+
+static void lock_for_each(struct lock *lck, int8_t (*func)(struct lock *lck, struct thread *t, void *aux), void *aux)
+{
+    struct list *lst = &lck->semaphore.waiters;
+    struct list_elem *elem;
+    
+    for(elem = list_rbegin(lst); elem != list_rend(lst); elem = list_prev(elem))
+        if(func(lck, list_entry(elem, struct thread, elem), aux) == 0)
+           break; 
+}
+
+static void lock_prio_inversion(struct lock *lck, int priority)
+{
+    enum intr_level old_level = intr_disable();
+    lock_for_each(lck, lock_update_priority, (void*)&priority); 
+    if(lck->holder)
+        lock_update_priority(lck, lck->holder, (void*)&priority);
+    intr_set_level(old_level);
+}
+
 /* Acquires LOCK, sleeping until it becomes available if
    necessary.  The lock must not already be held by the current
    thread.
@@ -198,12 +246,14 @@ lock_init (struct lock *lock)
 void
 lock_acquire (struct lock *lock)
 {
+  struct thread *t = thread_current();
   ASSERT (lock != NULL);
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
-
+  thread_insert_hold_lock(t, lock, t->priority);
+  lock_prio_inversion(lock, t->priority);
   sema_down (&lock->semaphore);
-  lock->holder = thread_current ();
+  lock->holder = t;
 }
 
 /* Tries to acquires LOCK and returns true if successful or false
@@ -234,11 +284,22 @@ lock_try_acquire (struct lock *lock)
 void
 lock_release (struct lock *lock) 
 {
+  struct thread *t;
+  int last_priority;
+
   ASSERT (lock != NULL);
   ASSERT (lock_held_by_current_thread (lock));
 
   lock->holder = NULL;
-  sema_up (&lock->semaphore);
+  
+  t = thread_current();
+  last_priority = t->priority;
+  
+  thread_remove_hold_lock(t, lock);
+  t->priority = thread_get_next_priority(t);
+  sema_up(&lock->semaphore);
+  if(t->priority < last_priority)
+      thread_yield();
 }
 
 /* Returns true if the current thread holds LOCK, false
@@ -251,7 +312,7 @@ lock_held_by_current_thread (const struct lock *lock)
 
   return lock->holder == thread_current ();
 }
-
+
 /* One semaphore in a list. */
 struct semaphore_elem 
   {
