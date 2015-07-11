@@ -20,6 +20,12 @@
    of thread.h for details. */
 #define THREAD_MAGIC 0xcd6abf4b
 
+#define THREAD_SET_PRIORITY(T, P)   \
+{                               \
+    T->priority = P;            \
+    T->saved_priority = P;      \
+}
+
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
 
@@ -73,6 +79,13 @@ static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
+
+inline static int8_t thread_bm_at(int bm, int slot);
+static int thread_bm_get_unset(int bm);
+static void thread_bm_update_at(int *bm, int slot, int8_t on);
+static void thread_update_lock(struct thread *t, struct lock *lock, int priority);
+
+static void thread_init_priority_queue();
 
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
@@ -369,11 +382,26 @@ thread_foreach (thread_action_func *func, void *aux)
     }
 }
 
-/* Sets the current thread's priority to NEW_PRIORITY. */
+/* Sets the current thread's priority to NEW_PRIORITY. 
+   Cases:
+    * Set priority if the thread if not associated with any lock.
+    * Set priority if the thread if associated with lock but the new
+      priority is more than current priority.
+    ELSE
+     * Loop through all the hold locks and update max priority
+     * if priority of max hold lock thread > new priority,
+          update thread priority to max hold lock thread priority
+    ELSE
+     * if new priority >= max hold lock thread priority,
+       update thread priority to new priority
+
+ These cases have been handled to avoid priority inversion problem.
+*/
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current ()->priority = new_priority;
+    thread_current()->priority = new_priority;
+    thread_current()->saved_priority = new_priority;
 }
 
 /* Returns the current thread's priority. */
@@ -413,7 +441,7 @@ thread_get_recent_cpu (void)
   /* Not yet implemented. */
   return 0;
 }
-
+
 /* Idle thread.  Executes when no other thread is ready to run.
 
    The idle thread is initially put on the ready list by
@@ -494,7 +522,7 @@ init_thread (struct thread *t, const char *name, int priority)
   ASSERT (name != NULL);
   
   memset (t, 0, sizeof *t);
-  t->hold_locks_bitmap = 0;
+  t->locks_bm = 0;
   t->status = THREAD_BLOCKED;
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
@@ -616,7 +644,7 @@ allocate_tid (void)
   return tid;
 }
 
-void thread_init_priority_queue()
+static void thread_init_priority_queue()
 {
     int index;
     for(index = 0; index <= PRI_MAX - PRI_MIN; ++index)
@@ -676,7 +704,6 @@ void thread_update_priority_queue(struct thread *t, int new_priority)
         {
             if(&t->elem == elem)
             {
-                printf("About to remove thread = %s\n", t->name);
                 list_remove(elem);
                 list_push_back(&priority_queue[new_priority], elem);
                 break;
@@ -685,82 +712,95 @@ void thread_update_priority_queue(struct thread *t, int new_priority)
     }
 }
 
-static int thread_get_lock_slot(struct thread *t)
+/* Functions related to hold locks. */
+inline static int8_t thread_bm_at(int bm, int slot)
+{
+    return (bm & (1 << slot));
+}
+
+static int thread_bm_get_unset(int bm)
 {
     int slot;
-    for(slot = 0; slot < MAX_HOLD_LOCKS; ++slot)
-    {
-        if((t->hold_locks_bitmap & (1 << slot)) == 0)
+    for(slot = 0; slot < THREAD_LOCKS; ++slot)
+        if(thread_bm_at(bm, slot) == 0)
             return slot;
-    }
     return -1;
 }
 
-static void thread_set_lock_slot(struct thread *t, int slot, int8_t on)
+static void thread_bm_update_at(int *bm, int slot, int8_t on)
 {
     if(on)
-        t->hold_locks_bitmap = t->hold_locks_bitmap | (1 << slot);
+        *bm = *bm | (1 << slot);
     else
-        t->hold_locks_bitmap = t->hold_locks_bitmap & ((~0) ^ (1 << slot));
+        *bm = *bm & ((~0) ^ (1 << slot));
 }
 
-uint8_t thread_insert_hold_lock(struct thread *t, struct lock *lck, int priority)
+static void thread_update_lock(struct thread *t, struct lock *lock, int priority)
 {
-    int unused_slot = thread_get_lock_slot(t);
-    if(unused_slot == -1)
+    int slot;
+    for(slot = 0; slot < THREAD_LOCKS; ++slot)
+    {
+        if(thread_bm_at(t->locks_bm, slot) && (t->locks[slot].lock == lock))
+        {
+            t->locks[slot].priority = priority;
+            return;
+        }
+    }
+    ASSERT(0);
+}
+
+uint8_t thread_add_lock(struct thread *t, struct lock *lock, int priority)
+{
+    int slot = thread_bm_get_unset(t->locks_bm);
+    if(slot == -1)
         return 0;
     else
     {
-        t->hold_locks[unused_slot].lck = lck;
-        t->hold_locks[unused_slot].priority = priority;
-        thread_set_lock_slot(t, unused_slot, 1);
+        struct thread_lock *node = &t->locks[slot];
+        node->lock = lock;
+        node->priority = priority;
+        thread_bm_update_at(&t->locks_bm, slot, 1);
     }
     return 1;
 }
 
-void  thread_remove_hold_lock(struct thread *t, struct lock *lck)
+void  thread_remove_lock(struct thread *t, struct lock *lock)
 {
     int slot;
-    for(slot = 0; slot < MAX_HOLD_LOCKS; ++slot)
+    for(slot = 0; slot < THREAD_LOCKS; ++slot)
     {
-        if((t->hold_locks_bitmap & (1 << slot)) 
-        && (t->hold_locks[slot].lck == lck))
+        if(thread_bm_at(t->locks_bm, slot) && (t->locks[slot].lock == lock))
         {
-            thread_set_lock_slot(t, slot, 0);
+            thread_bm_update_at(&t->locks_bm, slot, 0);
             return;
         }
     }
+
     ASSERT(0);
+
 }
 
-void thread_update_hold_lock(struct thread *t, struct lock *lck, int priority)
-{
-    int slot;
-    for(slot = 0; slot < MAX_HOLD_LOCKS; ++slot)
-    {
-        if((t->hold_locks_bitmap & (1 << slot)) 
-        && (t->hold_locks[slot].lck == lck))
-        {
-            t->hold_locks[slot].priority = priority;
-            return;
-        }
-    }
-    ASSERT(0);
-}
-
-int thread_get_next_priority(struct thread *t)
+int thread_get_max_priority(struct thread *t)
 {
     int priority = t->saved_priority;
     int slot;
-    for(slot = 0; slot < MAX_HOLD_LOCKS; ++slot)
-    {
-        if((t->hold_locks_bitmap & (1 << slot)))
-        {
-            if(priority < t->hold_locks[slot].priority)
-                priority = t->hold_locks[slot].priority;
-        }
-    }
+    for(slot = 0; slot < THREAD_LOCKS; ++slot)
+        if(thread_bm_at(t->locks_bm, slot) && (priority < t->locks[slot].priority))
+            priority = t->locks[slot].priority;
     return priority;
+}
+
+void thread_donate_priority(struct thread *t, struct lock *lock , int priority)
+{
+    if(t)
+    {
+        ASSERT(is_thread(t));
+        if(t->priority >= priority)
+            return;        
+        t->priority = priority;
+        thread_update_lock(t, lock, priority);
+        thread_donate_priority(t->parent_thread, t->parent_lock, priority);
+    }
 }
 
 /* Offset of `stack' member within `struct thread'.

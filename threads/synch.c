@@ -187,51 +187,17 @@ lock_init (struct lock *lock)
   sema_init (&lock->semaphore, 1);
 }
 
-/* These function tries to fix priority inversion by donating the priority to 
-   the thread involved with this lock.
-   It tries to loop throught the thread waiting list till it find the thread who's
-   priority is either greater than or equal to hi_priority value.
-   
-   Also we need to make sure that the thread who is current holding the lock may have been
-   yielded by higher priority thread. In which case we need to update holder locker thread
-   priority. There may also be the scenario where the locker holder thread may be in sleep state,
-   and in which case the thread may no be in priority queue. So we need to make the check that 
-   the thread is in READY state or not and if it is in ready state then update the priority queue.
-   We dont need to explicitly call the thread yield() or schedule function as it will be implicitly
-   call when the new thread is going to acquire the lock.
-*/
-
-static int8_t lock_update_priority(struct lock *lck, struct thread *t, void *aux)
-{
-    int *priority = (int*)aux;
-    if(t->priority < *priority)
-    {
-        thread_update_hold_lock(t, lck, *priority);
-        if(t->status == THREAD_READY)
-            thread_update_priority_queue(t, *priority);
-        t->priority = *priority;
-        return 1;
-    }
-    else
-        return 0;
-}
-
-static void lock_for_each(struct lock *lck, int8_t (*func)(struct lock *lck, struct thread *t, void *aux), void *aux)
-{
-    struct list *lst = &lck->semaphore.waiters;
-    struct list_elem *elem;
-    
-    for(elem = list_rbegin(lst); elem != list_rend(lst); elem = list_prev(elem))
-        if(func(lck, list_entry(elem, struct thread, elem), aux) == 0)
-           break; 
-}
-
-static void lock_prio_inversion(struct lock *lck, int priority)
+static void lock_priority_inversion(struct thread *t, struct lock *lock)
 {
     enum intr_level old_level = intr_disable();
-    lock_for_each(lck, lock_update_priority, (void*)&priority); 
-    if(lck->holder)
-        lock_update_priority(lck, lck->holder, (void*)&priority);
+    struct semaphore *sema= &lock->semaphore;
+    struct list_elem *parent = list_rbegin(&sema->waiters);
+    if(parent != list_rend(&sema->waiters))
+        t->parent_thread = list_entry(parent, struct thread, elem);
+    else
+        t->parent_thread = lock->holder;
+    t->parent_lock = lock;
+    thread_donate_priority(t->parent_thread, lock, t->priority);
     intr_set_level(old_level);
 }
 
@@ -250,9 +216,11 @@ lock_acquire (struct lock *lock)
   ASSERT (lock != NULL);
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
-  thread_insert_hold_lock(t, lock, t->priority);
-  lock_prio_inversion(lock, t->priority);
+  thread_add_lock(t, lock, t->priority);
+  lock_priority_inversion(t, lock);
   sema_down (&lock->semaphore);
+  t->parent_thread = NULL;
+  t->parent_lock = NULL;
   lock->holder = t;
 }
 
@@ -295,8 +263,8 @@ lock_release (struct lock *lock)
   t = thread_current();
   last_priority = t->priority;
   
-  thread_remove_hold_lock(t, lock);
-  t->priority = thread_get_next_priority(t);
+  thread_remove_lock(t, lock);
+  t->priority = thread_get_max_priority(t);
   sema_up(&lock->semaphore);
   if(t->priority < last_priority)
       thread_yield();
