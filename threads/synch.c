@@ -197,7 +197,7 @@ static void lock_priority_inversion(struct thread *t, struct lock *lock)
     else
         t->parent_thread = lock->holder;
     t->parent_lock = lock;
-    thread_donate_priority(t->parent_thread, lock, t->priority);
+    thread_donate_priority(t->parent_thread, lock, t);
     intr_set_level(old_level);
 }
 
@@ -216,7 +216,7 @@ lock_acquire (struct lock *lock)
   ASSERT (lock != NULL);
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
-  thread_add_lock(t, lock, t->priority);
+  thread_add_lock(t, lock, NULL);
   lock_priority_inversion(t, lock);
   sema_down (&lock->semaphore);
   t->parent_thread = NULL;
@@ -254,19 +254,26 @@ lock_release (struct lock *lock)
 {
   struct thread *t;
   int last_priority;
-
+  int new_priority;
+  int *priority;
+  
   ASSERT (lock != NULL);
   ASSERT (lock_held_by_current_thread (lock));
 
   lock->holder = NULL;
-  
   t = thread_current();
+  
   last_priority = t->priority;
+  priority = &t->priority;
   
   thread_remove_lock(t, lock);
-  t->priority = thread_get_max_priority(t);
+  new_priority = thread_get_max_priority(t);
+  
+  thread_update_priority_queue(t, new_priority);
+  *priority = new_priority;
+  
   sema_up(&lock->semaphore);
-  if(t->priority < last_priority)
+  if(last_priority > *priority)
       thread_yield();
 }
 

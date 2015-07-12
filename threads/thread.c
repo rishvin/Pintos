@@ -20,12 +20,6 @@
    of thread.h for details. */
 #define THREAD_MAGIC 0xcd6abf4b
 
-#define THREAD_SET_PRIORITY(T, P)   \
-{                               \
-    T->priority = P;            \
-    T->saved_priority = P;      \
-}
-
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
 
@@ -83,7 +77,8 @@ static tid_t allocate_tid (void);
 inline static int8_t thread_bm_at(int bm, int slot);
 static int thread_bm_get_unset(int bm);
 static void thread_bm_update_at(int *bm, int slot, int8_t on);
-static void thread_update_lock(struct thread *t, struct lock *lock, int priority);
+static void thread_update_lock(struct thread *t, struct lock *lock, struct thread *child_thread);
+static int thread_get_max_inherit_priority(struct thread *t);
 
 static void thread_init_priority_queue();
 
@@ -383,25 +378,31 @@ thread_foreach (thread_action_func *func, void *aux)
 }
 
 /* Sets the current thread's priority to NEW_PRIORITY. 
-   Cases:
-    * Set priority if the thread if not associated with any lock.
-    * Set priority if the thread if associated with lock but the new
-      priority is more than current priority.
-    ELSE
-     * Loop through all the hold locks and update max priority
-     * if priority of max hold lock thread > new priority,
-          update thread priority to max hold lock thread priority
-    ELSE
-     * if new priority >= max hold lock thread priority,
-       update thread priority to new priority
-
- These cases have been handled to avoid priority inversion problem.
 */
 void
 thread_set_priority (int new_priority) 
 {
-    thread_current()->priority = new_priority;
-    thread_current()->saved_priority = new_priority;
+    struct thread *t = thread_current();
+    int old_priority = t->priority;
+    int update_priority;
+    
+    t->saved_priority = new_priority;
+    
+    if(new_priority > old_priority) 
+        update_priority = new_priority;
+    else
+    {
+        update_priority = thread_get_max_inherit_priority(t);
+        if(update_priority == -1)
+            update_priority = new_priority;
+    }
+    if(old_priority != update_priority)
+    {
+        thread_update_priority_queue(t, update_priority);
+        t->priority = update_priority;
+    }
+    if(old_priority > update_priority)
+        thread_yield();
 }
 
 /* Returns the current thread's priority. */
@@ -688,7 +689,6 @@ void thread_update_priority_queue(struct thread *t, int new_priority)
     struct list *pq;
     struct list_elem *elem;
     
-    ASSERT(intr_get_level() == INTR_OFF);
     ASSERT(PRI_MIN <= new_priority && new_priority <= PRI_MAX);
     ASSERT(PRI_MIN <= t->priority && t->priority <= PRI_MAX);
     
@@ -735,21 +735,43 @@ static void thread_bm_update_at(int *bm, int slot, int8_t on)
         *bm = *bm & ((~0) ^ (1 << slot));
 }
 
-static void thread_update_lock(struct thread *t, struct lock *lock, int priority)
+static void thread_update_lock(struct thread *t, struct lock *lock, struct thread *child_thread)
 {
+    int bm = t->locks_bm;
+    struct thread_lock *locks = t->locks;
+    
     int slot;
     for(slot = 0; slot < THREAD_LOCKS; ++slot)
     {
-        if(thread_bm_at(t->locks_bm, slot) && (t->locks[slot].lock == lock))
+        if(thread_bm_at(bm, slot) && (locks[slot].lock == lock))
         {
-            t->locks[slot].priority = priority;
+            locks[slot].child_thread = child_thread;
             return;
         }
     }
     ASSERT(0);
 }
 
-uint8_t thread_add_lock(struct thread *t, struct lock *lock, int priority)
+static int thread_get_max_inherit_priority(struct thread *t)
+{
+    int priority = -1;
+    int bm = t->locks_bm;
+    struct thread_lock *locks = t->locks;
+    
+    int slot;
+    for(slot = 0; slot < THREAD_LOCKS; ++slot)
+    {
+        if(thread_bm_at(bm, slot) && locks[slot].child_thread)
+        {
+            int new_priority = locks[slot].child_thread->priority;
+            if(new_priority > priority)
+                priority = new_priority;
+        }
+    }
+    return priority;
+}
+
+uint8_t thread_add_lock(struct thread *t, struct lock *lock, struct thread *child_thread)
 {
     int slot = thread_bm_get_unset(t->locks_bm);
     if(slot == -1)
@@ -758,7 +780,7 @@ uint8_t thread_add_lock(struct thread *t, struct lock *lock, int priority)
     {
         struct thread_lock *node = &t->locks[slot];
         node->lock = lock;
-        node->priority = priority;
+        node->child_thread = child_thread;
         thread_bm_update_at(&t->locks_bm, slot, 1);
     }
     return 1;
@@ -766,40 +788,42 @@ uint8_t thread_add_lock(struct thread *t, struct lock *lock, int priority)
 
 void  thread_remove_lock(struct thread *t, struct lock *lock)
 {
+    int *bm = &t->locks_bm;
+    struct thread_lock *locks = t->locks;
     int slot;
     for(slot = 0; slot < THREAD_LOCKS; ++slot)
     {
-        if(thread_bm_at(t->locks_bm, slot) && (t->locks[slot].lock == lock))
+        if(thread_bm_at(*bm, slot) && (locks[slot].lock == lock))
         {
-            thread_bm_update_at(&t->locks_bm, slot, 0);
+            thread_bm_update_at(bm, slot, 0);
+            locks[slot].lock = NULL;
+            locks[slot].child_thread = NULL;
             return;
         }
     }
-
     ASSERT(0);
-
 }
 
 int thread_get_max_priority(struct thread *t)
 {
-    int priority = t->saved_priority;
-    int slot;
-    for(slot = 0; slot < THREAD_LOCKS; ++slot)
-        if(thread_bm_at(t->locks_bm, slot) && (priority < t->locks[slot].priority))
-            priority = t->locks[slot].priority;
+    int priority = thread_get_max_inherit_priority(t);
+    if(priority == -1 || priority < t->saved_priority)
+        priority = t->saved_priority;
     return priority;
 }
 
-void thread_donate_priority(struct thread *t, struct lock *lock , int priority)
+void thread_donate_priority(struct thread *t, struct lock *lock , struct thread *child_thread)
 {
     if(t)
     {
+        int new_priority = child_thread->priority;
         ASSERT(is_thread(t));
-        if(t->priority >= priority)
-            return;        
-        t->priority = priority;
-        thread_update_lock(t, lock, priority);
-        thread_donate_priority(t->parent_thread, t->parent_lock, priority);
+        if(t->priority >= new_priority)
+            return;
+        thread_update_priority_queue(t, new_priority);
+        t->priority = new_priority;
+        thread_update_lock(t, lock, child_thread);
+        thread_donate_priority(t->parent_thread, t->parent_lock, child_thread);
     }
 }
 

@@ -32,7 +32,7 @@ typedef int tid_t;
 struct thread_lock
 {
     struct lock *lock;
-    int priority;
+    struct thread *child_thread;
 };
 
 /* A kernel thread or user process.
@@ -105,11 +105,13 @@ struct thread
     int saved_priority;                 /* This will be use in case of priority inversion, it will restore the original priority. */
     
     struct thread *parent_thread;                   /* Parent thread on which it is blocked. */
-    struct thread *parent_lock;
+    struct lock *parent_lock;
     struct thread_lock locks[THREAD_LOCKS]; /* Locks that a thread can hold/ */
     int locks_bm;                           /* Bitmap to check which index is occupied by lock. */ 
     struct list_elem allelem;           /* List element for all threads list. */
-
+    
+    struct list_elem child;
+    
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
 #ifdef USERPROG
@@ -165,9 +167,9 @@ struct thread* thread_pop_from_priority_queue(void);
 void thread_update_priority_queue(struct thread *t, int new_priority);
 
 /* Interface related to priority inversion. */
-uint8_t thread_add_lock(struct thread *t, struct lock *lock, int priority);
+uint8_t thread_add_lock(struct thread *t, struct lock *lock, struct thread *child_thread);
 void  thread_remove_lock(struct thread *t, struct lock *lock);
 int thread_get_max_priority(struct thread *t);
-void thread_donate_priority(struct thread *t, struct lock *lock , int priority);
+void thread_donate_priority(struct thread *t, struct lock *lock , struct thread *child_thread);
 
 #endif /* threads/thread.h */
