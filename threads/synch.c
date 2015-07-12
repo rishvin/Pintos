@@ -32,6 +32,16 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
+static bool
+value_high (const struct list_elem *a_, const struct list_elem *b_,
+            void *aux UNUSED) 
+{
+  const struct thread *a = list_entry (a_, struct thread, elem);
+  const struct thread *b = list_entry (b_, struct thread, elem);
+  
+  return a->priority > b->priority;
+}
+
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
    manipulating it:
@@ -71,6 +81,7 @@ sema_down (struct semaphore *sema)
       struct thread *t = thread_current();
       t->is_waiting = 1;
       list_push_back (&sema->waiters, &t->elem);
+//      list_insert_ordered(&sema->waiters, &t->elem, value_high, NULL);
       thread_block ();
   }
   sema->value--;
@@ -111,19 +122,25 @@ void
 sema_up (struct semaphore *sema) 
 {
   enum intr_level old_level;
-
+  struct thread *t = NULL;
+  
   ASSERT (sema != NULL);
 
   old_level = intr_disable ();
   if (!list_empty (&sema->waiters))
   {
-    struct thread *t = list_entry (list_pop_front (&sema->waiters),
+    list_sort(&sema->waiters, value_high, NULL); /* Wake the highest priorty thread. */
+    t = list_entry (list_pop_front (&sema->waiters),
                                 struct thread, elem);
     t->is_waiting = 0;
     thread_unblock (t);
   }
   sema->value++;
   intr_set_level (old_level);
+  
+  if(t && t->priority > thread_current()->priority)
+      thread_yield();
+  
 }
 
 static void sema_test_helper (void *sema_);
@@ -294,6 +311,15 @@ struct semaphore_elem
     struct list_elem elem;              /* List element. */
     struct semaphore semaphore;         /* This semaphore. */
   };
+  
+static bool
+value_high_cond(const struct list_elem *a_, const struct list_elem *b_, void *aux UNUSED)
+{
+    const struct semaphore *a = &list_entry(a_, struct semaphore_elem, elem)->semaphore;
+    const struct semaphore *b = &list_entry(b_, struct semaphore_elem, elem)->semaphore;
+    return list_entry(list_front(&a->waiters), struct thread, elem)->priority >
+           list_entry(list_front(&b->waiters), struct thread, elem)->priority;
+}
 
 /* Initializes condition variable COND.  A condition variable
    allows one piece of code to signal a condition and cooperating
@@ -358,9 +384,12 @@ cond_signal (struct condition *cond, struct lock *lock UNUSED)
   ASSERT (!intr_context ());
   ASSERT (lock_held_by_current_thread (lock));
 
-  if (!list_empty (&cond->waiters)) 
+  if (!list_empty (&cond->waiters))
+  {
+    list_sort(&cond->waiters, value_high_cond, NULL);
     sema_up (&list_entry (list_pop_front (&cond->waiters),
                           struct semaphore_elem, elem)->semaphore);
+  }
 }
 
 /* Wakes up all threads, if any, waiting on COND (protected by
