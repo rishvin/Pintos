@@ -754,7 +754,7 @@ static void thread_update_lock(struct thread *t, struct lock *lock, struct threa
 
 static int thread_get_max_inherit_priority(struct thread *t)
 {
-    int priority = -1;
+    int priority = PRI_MIN - 1;
     int bm = t->locks_bm;
     struct thread_lock *locks = t->locks;
     
@@ -807,7 +807,7 @@ void  thread_remove_lock(struct thread *t, struct lock *lock)
 int thread_get_max_priority(struct thread *t)
 {
     int priority = thread_get_max_inherit_priority(t);
-    if(priority == -1 || priority < t->saved_priority)
+    if((priority == PRI_MIN - 1) || (priority < t->saved_priority))
         priority = t->saved_priority;
     return priority;
 }
