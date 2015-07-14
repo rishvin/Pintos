@@ -182,8 +182,9 @@ timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
   thread_tick ();
-
-  thread_foreach(thread_on_tick, NULL);
+  if(ticks % 60 == 0)
+      thread_calc_load_avg();
+  thread_foreach(thread_on_tick, &ticks);
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer

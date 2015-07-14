@@ -40,6 +40,11 @@ static struct lock tid_lock;
 /* Priority list */
 static struct list priority_queue[PRI_MAX - PRI_MIN + 1];
 
+/* mlfq related variables */
+static int8_t mlfq_enabled = 0;
+static int load_avg;
+
+
 /* Stack frame for kernel_thread(). */
 struct kernel_thread_frame 
   {
@@ -80,7 +85,10 @@ static void thread_bm_update_at(int *bm, int slot, int8_t on);
 static void thread_update_lock(struct thread *t, struct lock *lock, struct thread *child_thread);
 static int thread_get_max_inherit_priority(struct thread *t);
 
-static void thread_init_priority_queue();
+static void thread_init_priority_queue(void);
+
+static int thread_calc_rcpu(struct thread *t);
+static void thread_calc_priority(struct thread *t);
 
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
@@ -143,8 +151,10 @@ thread_tick (void)
     user_ticks++;
 #endif
   else
-    kernel_ticks++;
-
+  {
+      t->rcpu++;
+      kernel_ticks++;      
+  }
   /* Enforce preemption. */
   if (++thread_ticks >= TIME_SLICE)
     intr_yield_on_return ();
@@ -272,18 +282,18 @@ thread_unblock (struct thread *t)
   }
 }
 
-void thread_on_tick(struct thread *t, void *aux)
-{ 
+void thread_on_tick(struct thread *t, int64_t ticks)
+{
+    if(ticks % 60 == 0)
+        thread_calc_rcpu(t);
+    if(ticks % 4 == 0 && thread_mlfq_is_enabled() == 1)
+        thread_calc_priority(t);
     if((t->status == THREAD_BLOCKED))
     {
         if(t->sleep_time > 0)
-        {
             t->sleep_time--;
-        }
         else if(t->is_waiting == 0)
-        {
             thread_unblock(t);
-        }
     }
 }
 
@@ -365,15 +375,16 @@ thread_yield (void)
 void
 thread_foreach (thread_action_func *func, void *aux)
 {
+  int64_t ticks = *(int64_t*)aux;
   struct list_elem *e;
 
   ASSERT (intr_get_level () == INTR_OFF);
-
+  
   for (e = list_begin (&all_list); e != list_end (&all_list);
        e = list_next (e))
     {
       struct thread *t = list_entry (e, struct thread, allelem);
-      func (t, aux);
+      func (t, ticks);
     }
 }
 
@@ -382,6 +393,7 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
+    ASSERT(thread_mlfq_is_enabled() == 0);
     struct thread *t = thread_current();
     int old_priority = t->priority;
     int update_priority;
@@ -414,33 +426,73 @@ thread_get_priority (void)
 
 /* Sets the current thread's nice value to NICE. */
 void
-thread_set_nice (int nice UNUSED) 
+thread_set_nice (int nice) 
 {
-  /* Not yet implemented. */
+  ASSERT(thread_mlfq_is_enabled() == 1);
+  ASSERT(nice >= NICE_MIN && nice <= NICE_MAX);
+  thread_current()->nice = nice;
 }
 
 /* Returns the current thread's nice value. */
 int
 thread_get_nice (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+  ASSERT(thread_mlfq_is_enabled() == 1);
+  return thread_current()->nice;
+}
+
+/* This function is called every 1 time in 60 sec
+   to calculate the load on the system. 
+*/
+void thread_calc_load_avg()
+{
+    ASSERT (intr_get_level () == INTR_OFF);
+    load_avg = (int)((int64_t)59 * (1 << 14) / 60 
+        + (int64_t)(1 << 14) / 60 * thread_get_ready_count());
+}
+
+/* This function is called every 1 time in 60 sec 
+   to calculate the recent cpu usage by the thread.
+*/
+static int thread_calc_rcpu(struct thread *t)
+{
+    int load_avg = thread_get_load_avg();
+    t->rcpu = ((1 << load_avg) >> ((1 << load_avg) + 1) * t->rcpu) + t->nice;
+}
+
+/* This function calulates the priority of thread, 1 time in every 4 sec. */
+static void thread_calc_priority(struct thread *t)
+{
+    ASSERT(thread_mlfq_is_enabled() == 1);
+    int np = PRI_MAX - ((t->rcpu * (1 << 14)) >> (1 << 2)) - t->nice * 2;
+    np = (np < PRI_MIN ? PRI_MIN : np);
+    np = (np > PRI_MAX ? PRI_MAX : np);
+    t->priority = np;
 }
 
 /* Returns 100 times the system load average. */
 int
 thread_get_load_avg (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+    ASSERT (intr_get_level () == INTR_OFF);
+    return ((load_avg + (1 << 13)) >> (1 << 14)) * 100;
 }
 
 /* Returns 100 times the current thread's recent_cpu value. */
 int
 thread_get_recent_cpu (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+    return thread_current()->rcpu * 100;
+}
+
+int8_t thread_mlfq_is_enabled()
+{
+    return mlfq_enabled;
+}
+
+void thread_mlfq_enable()
+{
+    mlfq_enabled = 1;
 }
 
 /* Idle thread.  Executes when no other thread is ready to run.
@@ -710,6 +762,15 @@ void thread_update_priority_queue(struct thread *t, int new_priority)
             }
         }
     }
+}
+
+int thread_get_ready_count()
+{
+    int count = 0;
+    int i;
+    for(i = 0; i < PRI_MAX - PRI_MIN; ++i)
+        count += list_size(&priority_queue[i]);
+    return count;
 }
 
 /* Functions related to hold locks. */

@@ -25,9 +25,9 @@ typedef int tid_t;
 #define PRI_MIN 0                       /* Lowest priority. */
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
-
-/* Max Lock limit by thread. */
-#define THREAD_LOCKS 32
+#define NICE_MIN -21                    /* Lowest nice value. */
+#define NICE_MAX 21                     /* Highest nice value. */
+#define THREAD_LOCKS 32                 /* Max Lock limit by thread. */
 
 struct thread_lock
 {
@@ -119,6 +119,10 @@ struct thread
     uint32_t *pagedir;                  /* Page directory. */
 #endif
 
+/* Used for mlfq. */
+    int nice;                       /* Current nice value for thread. */
+    int rcpu;                       /* Recent cpu usage by thread. */
+
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
   };
@@ -159,17 +163,25 @@ int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
 
 
-void thread_on_tick(struct thread *t, void *aux);
+void thread_on_tick(struct thread *t, int64_t ticks);
 
 /* Interfaces related to priority_queue. */
 void thread_push_to_priority_queue(struct thread *t);
 struct thread* thread_pop_from_priority_queue(void);
 void thread_update_priority_queue(struct thread *t, int new_priority);
+int thread_get_ready_count(void);
 
 /* Interface related to priority inversion. */
 uint8_t thread_add_lock(struct thread *t, struct lock *lock, struct thread *child_thread);
 void  thread_remove_lock(struct thread *t, struct lock *lock);
 int thread_get_max_priority(struct thread *t);
 void thread_donate_priority(struct thread *t, struct lock *lock , struct thread *child_thread);
+
+/* Interface related to mlfq. */
+int8_t thread_mlfq_is_enabled(void);
+void thread_mlfq_enable(void);
+void thread_calc_load_avg(void);
+int thread_mlfq_get_priority(struct thread *t);
+
 
 #endif /* threads/thread.h */
