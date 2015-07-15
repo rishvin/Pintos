@@ -315,8 +315,8 @@ struct semaphore_elem
 static bool
 value_high_cond(const struct list_elem *a_, const struct list_elem *b_, void *aux UNUSED)
 {
-    const struct semaphore *a = &list_entry(a_, struct semaphore_elem, elem)->semaphore;
-    const struct semaphore *b = &list_entry(b_, struct semaphore_elem, elem)->semaphore;
+    struct semaphore *a = &list_entry(a_, struct semaphore_elem, elem)->semaphore;
+    struct semaphore *b = &list_entry(b_, struct semaphore_elem, elem)->semaphore;
     return list_entry(list_front(&a->waiters), struct thread, elem)->priority >
            list_entry(list_front(&b->waiters), struct thread, elem)->priority;
 }

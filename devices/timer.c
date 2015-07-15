@@ -182,7 +182,7 @@ timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
   thread_tick ();
-  if(ticks % 60 == 0)
+  if(ticks % TIMER_FREQ  == 0)
       thread_calc_load_avg();
   thread_foreach(thread_on_tick, &ticks);
 }

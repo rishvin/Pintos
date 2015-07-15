@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include <fp.h>
 
 struct lock;
 
@@ -163,13 +164,13 @@ int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
 
 
-void thread_on_tick(struct thread *t, int64_t ticks);
+void thread_on_tick(struct thread *t, void* aux);
 
 /* Interfaces related to priority_queue. */
 void thread_push_to_priority_queue(struct thread *t);
 struct thread* thread_pop_from_priority_queue(void);
 void thread_update_priority_queue(struct thread *t, int new_priority);
-int thread_get_ready_count(void);
+int thread_get_active_count(void);
 
 /* Interface related to priority inversion. */
 uint8_t thread_add_lock(struct thread *t, struct lock *lock, struct thread *child_thread);
@@ -178,8 +179,7 @@ int thread_get_max_priority(struct thread *t);
 void thread_donate_priority(struct thread *t, struct lock *lock , struct thread *child_thread);
 
 /* Interface related to mlfq. */
-int8_t thread_mlfq_is_enabled(void);
-void thread_mlfq_enable(void);
+void init_mlfqs(void);
 void thread_calc_load_avg(void);
 int thread_mlfq_get_priority(struct thread *t);
 

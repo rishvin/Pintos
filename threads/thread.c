@@ -41,9 +41,9 @@ static struct lock tid_lock;
 static struct list priority_queue[PRI_MAX - PRI_MIN + 1];
 
 /* mlfq related variables */
-static int8_t mlfq_enabled = 0;
-static int load_avg;
-
+static fp_t load_avg;
+static fp_t load_coeff_max;
+static fp_t load_coeff_min;
 
 /* Stack frame for kernel_thread(). */
 struct kernel_thread_frame 
@@ -87,7 +87,7 @@ static int thread_get_max_inherit_priority(struct thread *t);
 
 static void thread_init_priority_queue(void);
 
-static int thread_calc_rcpu(struct thread *t);
+static void thread_calc_rcpu(struct thread *t);
 static void thread_calc_priority(struct thread *t);
 
 /* Initializes the threading system by transforming the code
@@ -282,11 +282,12 @@ thread_unblock (struct thread *t)
   }
 }
 
-void thread_on_tick(struct thread *t, int64_t ticks)
+void thread_on_tick(struct thread *t, void *aux)
 {
+    int ticks = *(int64_t*)aux;
     if(ticks % 60 == 0)
         thread_calc_rcpu(t);
-    if(ticks % 4 == 0 && thread_mlfq_is_enabled() == 1)
+    if(ticks % 4 == 0 && thread_mlfqs)
         thread_calc_priority(t);
     if((t->status == THREAD_BLOCKED))
     {
@@ -375,7 +376,6 @@ thread_yield (void)
 void
 thread_foreach (thread_action_func *func, void *aux)
 {
-  int64_t ticks = *(int64_t*)aux;
   struct list_elem *e;
 
   ASSERT (intr_get_level () == INTR_OFF);
@@ -384,7 +384,7 @@ thread_foreach (thread_action_func *func, void *aux)
        e = list_next (e))
     {
       struct thread *t = list_entry (e, struct thread, allelem);
-      func (t, ticks);
+      func (t, aux);
     }
 }
 
@@ -393,7 +393,7 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
-    ASSERT(thread_mlfq_is_enabled() == 0);
+    ASSERT(!thread_mlfqs);
     struct thread *t = thread_current();
     int old_priority = t->priority;
     int update_priority;
@@ -428,7 +428,7 @@ thread_get_priority (void)
 void
 thread_set_nice (int nice) 
 {
-  ASSERT(thread_mlfq_is_enabled() == 1);
+  ASSERT(thread_mlfqs);
   ASSERT(nice >= NICE_MIN && nice <= NICE_MAX);
   thread_current()->nice = nice;
 }
@@ -437,36 +437,41 @@ thread_set_nice (int nice)
 int
 thread_get_nice (void) 
 {
-  ASSERT(thread_mlfq_is_enabled() == 1);
+  ASSERT(thread_mlfqs);
   return thread_current()->nice;
 }
 
 /* This function is called every 1 time in 60 sec
    to calculate the load on the system. 
 */
+
 void thread_calc_load_avg()
 {
     ASSERT (intr_get_level () == INTR_OFF);
-    load_avg = (int)((int64_t)59 * (1 << 14) / 60 
-        + (int64_t)(1 << 14) / 60 * thread_get_ready_count());
+    fp_t last_avg = load_avg;
+    load_avg = load_coeff_max * load_avg;
+    /* This load should be less than last load. */
+    if(last_avg && last_avg <= load_avg)
+        load_avg = fp_adjust(load_avg);
+    load_avg += load_coeff_min * thread_get_active_count();
+    printf(" load avg = %lld ", load_avg);
 }
 
 /* This function is called every 1 time in 60 sec 
    to calculate the recent cpu usage by the thread.
 */
-static int thread_calc_rcpu(struct thread *t)
+static void thread_calc_rcpu(struct thread *t)
 {
-    int load_avg = thread_get_load_avg();
-    t->rcpu = ((1 << load_avg) >> ((1 << load_avg) + 1) * t->rcpu) + t->nice;
+    t->rcpu = fp_round_to_int(load_avg * 2 / (load_avg * 2 + fp_int_to_fp_t(1))) * t->rcpu + t->nice;
 }
 
 /* This function calulates the priority of thread, 1 time in every 4 sec. */
 static void thread_calc_priority(struct thread *t)
 {
-    ASSERT(thread_mlfq_is_enabled() == 1);
-    int np = PRI_MAX - ((t->rcpu * (1 << 14)) >> (1 << 2)) - t->nice * 2;
-    np = (np < PRI_MIN ? PRI_MIN : np);
-    np = (np > PRI_MAX ? PRI_MAX : np);
+    ASSERT(thread_mlfqs);
+    int np = PRI_MAX - fp_round_to_int(fp_int_to_fp_t(t->rcpu) / 4) - t->nice * 2;
+    np = np < PRI_MIN ? PRI_MIN : np > PRI_MAX ? PRI_MAX : np;
+    thread_update_priority_queue(t, np);    
     t->priority = np;
 }
 
@@ -474,8 +479,12 @@ static void thread_calc_priority(struct thread *t)
 int
 thread_get_load_avg (void) 
 {
-    ASSERT (intr_get_level () == INTR_OFF);
-    return ((load_avg + (1 << 13)) >> (1 << 14)) * 100;
+    int avg;
+    enum intr_level old_level = intr_disable();
+    avg = fp_round_to_int(load_avg * 100);
+    intr_set_level(old_level);
+    return avg;
+    
 }
 
 /* Returns 100 times the current thread's recent_cpu value. */
@@ -483,16 +492,6 @@ int
 thread_get_recent_cpu (void) 
 {
     return thread_current()->rcpu * 100;
-}
-
-int8_t thread_mlfq_is_enabled()
-{
-    return mlfq_enabled;
-}
-
-void thread_mlfq_enable()
-{
-    mlfq_enabled = 1;
 }
 
 /* Idle thread.  Executes when no other thread is ready to run.
@@ -764,9 +763,9 @@ void thread_update_priority_queue(struct thread *t, int new_priority)
     }
 }
 
-int thread_get_ready_count()
+int thread_get_active_count()
 {
-    int count = 0;
+    int count = (thread_current() == idle_thread ? 0 : 1);
     int i;
     for(i = 0; i < PRI_MAX - PRI_MIN; ++i)
         count += list_size(&priority_queue[i]);
@@ -886,6 +885,13 @@ void thread_donate_priority(struct thread *t, struct lock *lock , struct thread 
         thread_update_lock(t, lock, child_thread);
         thread_donate_priority(t->parent_thread, t->parent_lock, child_thread);
     }
+}
+
+void init_mlfqs()
+{
+    thread_mlfqs = true;
+    load_coeff_max = fp_int_to_fp_t(59) / 60;
+    load_coeff_min = fp_int_to_fp_t(1) / 60;
 }
 
 /* Offset of `stack' member within `struct thread'.
