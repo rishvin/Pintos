@@ -383,8 +383,11 @@ intr_handler (struct intr_frame *frame)
       in_external_intr = false;
       pic_end_of_interrupt (frame->vec_no); 
 
-      if (yield_on_return) 
-        thread_yield (); 
+      if (yield_on_return)
+      {
+        //printf("Thread %s about to yield and has prio = %d\n", thread_current()->name, thread_current()->priority);
+        thread_yield ();
+      } 
     }
 }
 

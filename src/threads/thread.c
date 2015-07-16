@@ -12,6 +12,7 @@
 #include "threads/switch.h"
 #include "threads/synch.h"
 #include "threads/vaddr.h"
+#include "devices/timer.h"
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -20,6 +21,8 @@
    Used to detect stack overflow.  See the big comment at the top
    of thread.h for details. */
 #define THREAD_MAGIC 0xcd6abf4b
+
+#define MLFQS_TICK_EXPIRE 4
 
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
@@ -268,16 +271,13 @@ thread_block (void)
 void
 thread_unblock (struct thread *t) 
 {
-  enum intr_level old_level;
-
   ASSERT (is_thread (t));
-  if((t->sleep_time == 0) && (t->is_waiting == 0))
+  if(!t->sleep_time && !t->is_waiting)
   {
+    enum intr_level old_level;
+    ASSERT (t->status == THREAD_BLOCKED);    
     old_level = intr_disable ();
-    ASSERT (t->status == THREAD_BLOCKED);
-
     thread_push_to_priority_queue(t);
-
     t->status = THREAD_READY;
     intr_set_level (old_level);
   }
@@ -285,17 +285,23 @@ thread_unblock (struct thread *t)
 
 void thread_on_tick(struct thread *t, void *aux)
 {
-    int ticks = *(int64_t*)aux;
-    if(ticks % 60 == 0)
-        thread_calc_rcpu(t);
-    if(ticks % 4 == 0 && thread_mlfqs)
-        thread_calc_priority(t);
-    if((t->status == THREAD_BLOCKED))
+    if(!idle_thread)
     {
-        if(t->sleep_time > 0)
-            t->sleep_time--;
-        else if(t->is_waiting == 0)
-            thread_unblock(t);
+        if(t->status == THREAD_BLOCKED)
+        {
+            if(t->sleep_time > 0)
+                t->sleep_time--;
+            else if(t->is_waiting == 0)
+                thread_unblock(t);
+        }        
+        if(t->status != THREAD_BLOCKED)
+        {
+            int ticks = *(int64_t*)aux;
+            if(ticks % TIMER_FREQ == 0)
+                thread_calc_rcpu(t);
+            if((thread_mlfqs) && (ticks % MLFQS_TICK_EXPIRE == 0))
+                thread_calc_priority(t);
+        }
     }
 }
 
@@ -394,28 +400,30 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
-    ASSERT(!thread_mlfqs);
-    struct thread *t = thread_current();
-    int old_priority = t->priority;
-    int update_priority;
-    
-    t->saved_priority = new_priority;
-    
-    if(new_priority > old_priority) 
-        update_priority = new_priority;
-    else
+    if(!thread_mlfqs)
     {
-        update_priority = thread_get_max_inherit_priority(t);
-        if(update_priority == -1)
+        struct thread *t = thread_current();
+        int old_priority = t->priority;
+        int update_priority;
+    
+        t->saved_priority = new_priority;
+    
+        if(new_priority > old_priority) 
             update_priority = new_priority;
+        else
+        {
+            update_priority = thread_get_max_inherit_priority(t);
+            if(update_priority == -1)
+                update_priority = new_priority;
+        }
+        if(old_priority != update_priority)
+        {
+            thread_update_priority_queue(t, update_priority);
+            t->priority = update_priority;
+        }
+        if(old_priority > update_priority)
+            thread_yield();
     }
-    if(old_priority != update_priority)
-    {
-        thread_update_priority_queue(t, update_priority);
-        t->priority = update_priority;
-    }
-    if(old_priority > update_priority)
-        thread_yield();
 }
 
 /* Returns the current thread's priority. */
@@ -429,16 +437,17 @@ thread_get_priority (void)
 void
 thread_set_nice (int nice) 
 {
-  ASSERT(thread_mlfqs);
-  ASSERT(nice >= NICE_MIN && nice <= NICE_MAX);
-  thread_current()->nice = nice;
+  if(thread_mlfqs)
+  {
+      ASSERT(nice >= NICE_MIN && nice <= NICE_MAX);
+      thread_current()->nice = nice;
+  }
 }
 
 /* Returns the current thread's nice value. */
 int
 thread_get_nice (void) 
 {
-  ASSERT(thread_mlfqs);
   return thread_current()->nice;
 }
 
@@ -448,14 +457,17 @@ thread_get_nice (void)
 
 void thread_calc_load_avg()
 {
+    int count = 0;
     ASSERT (intr_get_level () == INTR_OFF);
     fp_t last_avg = load_avg;
     load_avg = load_coeff_max * load_avg;
+    
     /* This load should be less than last load. */
     if(last_avg && last_avg <= load_avg)
         load_avg = fp_adjust(load_avg);
-    load_avg += load_coeff_min * thread_get_active_count();
-    printf(" load avg = %lld ", load_avg);
+    count = thread_get_active_count();
+    load_avg += load_coeff_min * count;
+    //printf(" ** load avg = %lld with count = %d **", load_avg, count);
 }
 
 /* This function is called every 1 time in 60 sec 
@@ -470,7 +482,7 @@ static void thread_calc_rcpu(struct thread *t)
 static void thread_calc_priority(struct thread *t)
 {
     ASSERT(thread_mlfqs);
-    int np = PRI_MAX - fp_round_to_int(fp_int_to_fp_t(t->rcpu) / 4) - t->nice * 2;
+    int np = PRI_MAX - fp_round_to_int(fp_int_to_fp_t(t->rcpu) / MLFQS_TICK_EXPIRE) - t->nice * 2;
     np = np < PRI_MIN ? PRI_MIN : np > PRI_MAX ? PRI_MAX : np;
     thread_update_priority_queue(t, np);    
     t->priority = np;
@@ -576,6 +588,8 @@ init_thread (struct thread *t, const char *name, int priority)
   
   memset (t, 0, sizeof *t);
   t->locks_bm = 0;
+  t->nice = 0;
+  t->rcpu = 0;
   t->status = THREAD_BLOCKED;
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
@@ -608,9 +622,7 @@ next_thread_to_run (void)
 {
     struct thread *t = thread_pop_from_priority_queue();
     if(t == NULL)
-    {
         t = idle_thread;
-    }
     return t;
 }
 
@@ -766,7 +778,7 @@ void thread_update_priority_queue(struct thread *t, int new_priority)
 
 int thread_get_active_count()
 {
-    int count = (thread_current() == idle_thread ? 0 : 1);
+    int count = ((thread_current() != idle_thread) && (thread_current()->status != THREAD_BLOCKED)) ? 1 : 0;
     int i;
     for(i = 0; i < PRI_MAX - PRI_MIN; ++i)
         count += list_size(&priority_queue[i]);
@@ -798,6 +810,7 @@ static void thread_bm_update_at(int *bm, int slot, int8_t on)
 
 static void thread_update_lock(struct thread *t, struct lock *lock, struct thread *child_thread)
 {
+    ASSERT(!thread_mlfqs)
     int bm = t->locks_bm;
     struct thread_lock *locks = t->locks;
     
@@ -815,6 +828,7 @@ static void thread_update_lock(struct thread *t, struct lock *lock, struct threa
 
 static int thread_get_max_inherit_priority(struct thread *t)
 {
+    ASSERT(!thread_mlfqs)
     int priority = PRI_MIN - 1;
     int bm = t->locks_bm;
     struct thread_lock *locks = t->locks;
@@ -834,6 +848,7 @@ static int thread_get_max_inherit_priority(struct thread *t)
 
 uint8_t thread_add_lock(struct thread *t, struct lock *lock, struct thread *child_thread)
 {
+    ASSERT(!thread_mlfqs)
     int slot = thread_bm_get_unset(t->locks_bm);
     if(slot == -1)
         return 0;
@@ -849,6 +864,7 @@ uint8_t thread_add_lock(struct thread *t, struct lock *lock, struct thread *chil
 
 void  thread_remove_lock(struct thread *t, struct lock *lock)
 {
+    ASSERT(!thread_mlfqs)
     int *bm = &t->locks_bm;
     struct thread_lock *locks = t->locks;
     int slot;
@@ -867,6 +883,7 @@ void  thread_remove_lock(struct thread *t, struct lock *lock)
 
 int thread_get_max_priority(struct thread *t)
 {
+    ASSERT(!thread_mlfqs)
     int priority = thread_get_max_inherit_priority(t);
     if((priority == PRI_MIN - 1) || (priority < t->saved_priority))
         priority = t->saved_priority;
@@ -875,6 +892,7 @@ int thread_get_max_priority(struct thread *t)
 
 void thread_donate_priority(struct thread *t, struct lock *lock , struct thread *child_thread)
 {
+    ASSERT(!thread_mlfqs)
     if(t)
     {
         int new_priority = child_thread->priority;
