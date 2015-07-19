@@ -385,9 +385,9 @@ intr_handler (struct intr_frame *frame)
 
       if (yield_on_return)
       {
-        //printf("Thread %s about to yield and has prio = %d\n", thread_current()->name, thread_current()->priority);
+        //printf("tq exp\n");
         thread_yield ();
-      } 
+      }
     }
 }
 

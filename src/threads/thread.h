@@ -121,7 +121,7 @@ struct thread
 
 /* Used for mlfq. */
     int nice;                       /* Current nice value for thread. */
-    int rcpu;                       /* Recent cpu usage by thread. */
+    fp_t rcpu;                       /* Recent cpu usage by thread. */
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
@@ -181,6 +181,5 @@ void thread_donate_priority(struct thread *t, struct lock *lock , struct thread 
 void init_mlfqs(void);
 void thread_calc_load_avg(void);
 int thread_mlfq_get_priority(struct thread *t);
-
 
 #endif /* threads/thread.h */
