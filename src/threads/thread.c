@@ -91,7 +91,8 @@ static int thread_get_max_inherit_priority(struct thread *t);
 
 static void thread_init_priority_queue(void);
 
-static void thread_calc_rcpu(struct thread *t);
+//static 
+void thread_calc_rcpu(struct thread *t);
 static void thread_calc_priority(struct thread *t);
 
 /* Initializes the threading system by transforming the code
@@ -156,8 +157,9 @@ thread_tick (void)
 #endif
   else
   {
-      t->rcpu++;
-      kernel_ticks++;      
+      kernel_ticks++; 
+      t->rcpu = fp_inc(t->rcpu);
+      //printf("cpu  for %s = %d\n", t->name, t->rcpu);
   }
   /* Enforce preemption. */
   if (++thread_ticks >= TIME_SLICE)
@@ -272,12 +274,14 @@ void
 thread_unblock (struct thread *t) 
 {
   ASSERT (is_thread (t));
-  if(!t->sleep_time && !t->is_waiting)
+  if(t->sleep_time <= 0 && !t->is_waiting)
   {
     enum intr_level old_level;
-    ASSERT (t->status == THREAD_BLOCKED);    
+    ASSERT (t->status == THREAD_BLOCKED);
     old_level = intr_disable ();
-    thread_push_to_priority_queue(t);
+    if(t != idle_thread)
+        thread_push_to_priority_queue(t);
+    t->sleep_time = 0;
     t->status = THREAD_READY;
     intr_set_level (old_level);
   }
@@ -285,23 +289,20 @@ thread_unblock (struct thread *t)
 
 void thread_on_tick(struct thread *t, void *aux)
 {
-    if(!idle_thread)
+    int64_t ticks = *(int64_t*)aux;
+    if((ticks % TIMER_FREQ) == 0)
+        thread_calc_rcpu(t);
+    if(t->status == THREAD_BLOCKED)
     {
-        if(t->status == THREAD_BLOCKED)
-        {
-            if(t->sleep_time > 0)
-                t->sleep_time--;
-            else if(t->is_waiting == 0)
-                thread_unblock(t);
-        }        
-        if(t->status != THREAD_BLOCKED)
-        {
-            int ticks = *(int64_t*)aux;
-            if(ticks % TIMER_FREQ == 0)
-                thread_calc_rcpu(t);
-            if((thread_mlfqs) && (ticks % MLFQS_TICK_EXPIRE == 0))
-                thread_calc_priority(t);
-        }
+        if(t->sleep_time > 0)
+            t->sleep_time--;
+        else if(t->is_waiting == 0)
+            thread_unblock(t);
+    }        
+    if(t->status != THREAD_BLOCKED)
+    {
+        if((thread_mlfqs) && (ticks % MLFQS_TICK_EXPIRE == 0))
+            thread_calc_priority(t);
     }
 }
 
@@ -457,32 +458,28 @@ thread_get_nice (void)
 
 void thread_calc_load_avg()
 {
-    int count = 0;
     ASSERT (intr_get_level () == INTR_OFF);
-    fp_t last_avg = load_avg;
-    load_avg = load_coeff_max * load_avg;
-    
-    /* This load should be less than last load. */
-    if(last_avg && last_avg <= load_avg)
-        load_avg = fp_adjust(load_avg);
-    count = thread_get_active_count();
-    load_avg += load_coeff_min * count;
-    //printf(" ** load avg = %lld with count = %d **", load_avg, count);
+    load_avg = fp_mul(load_coeff_max, load_avg) 
+        + load_coeff_min * thread_get_active_count();
 }
 
 /* This function is called every 1 time in 60 sec 
    to calculate the recent cpu usage by the thread.
 */
-static void thread_calc_rcpu(struct thread *t)
+//static 
+void thread_calc_rcpu(struct thread *t)
 {
-    t->rcpu = fp_round_to_int(load_avg * 2 / (load_avg * 2 + fp_int_to_fp_t(1))) * t->rcpu + t->nice;
+    fp_t val = 2 * load_avg;
+    //printf("calculating rcpu with tname=%s, rcpu= %d, load = %d, val = %d**\n", t->name, t->rcpu, load_avg, val);    
+    t->rcpu = fp_mul(fp_div(val, fp_inc(val)), t->rcpu) + fp_conv_int(t->nice);
+   // printf("**@tick = %lld, rcpu = %d**\n", timer_ticks(), t->rcpu);
 }
 
 /* This function calulates the priority of thread, 1 time in every 4 sec. */
 static void thread_calc_priority(struct thread *t)
 {
     ASSERT(thread_mlfqs);
-    int np = PRI_MAX - fp_round_to_int(fp_int_to_fp_t(t->rcpu) / MLFQS_TICK_EXPIRE) - t->nice * 2;
+    int np = PRI_MAX - fp_get_int_rnd(fp_conv_int(t->rcpu) / MLFQS_TICK_EXPIRE) - t->nice * 2;
     np = np < PRI_MIN ? PRI_MIN : np > PRI_MAX ? PRI_MAX : np;
     thread_update_priority_queue(t, np);    
     t->priority = np;
@@ -494,7 +491,7 @@ thread_get_load_avg (void)
 {
     int avg;
     enum intr_level old_level = intr_disable();
-    avg = fp_round_to_int(load_avg * 100);
+    avg = fp_get_int_rnd(load_avg * 100);
     intr_set_level(old_level);
     return avg;
     
@@ -504,7 +501,11 @@ thread_get_load_avg (void)
 int
 thread_get_recent_cpu (void) 
 {
-    return thread_current()->rcpu * 100;
+    int rcpu;
+    enum intr_level old_level = intr_disable();
+    rcpu = fp_get_int_rnd(thread_current()->rcpu * 100);
+    intr_set_level(old_level);
+    return rcpu;
 }
 
 /* Idle thread.  Executes when no other thread is ready to run.
@@ -589,7 +590,10 @@ init_thread (struct thread *t, const char *name, int priority)
   memset (t, 0, sizeof *t);
   t->locks_bm = 0;
   t->nice = 0;
-  t->rcpu = 0;
+  if(t == initial_thread)
+      t->rcpu = 0;
+  else
+      t->rcpu = thread_current()->rcpu;
   t->status = THREAD_BLOCKED;
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
@@ -778,7 +782,7 @@ void thread_update_priority_queue(struct thread *t, int new_priority)
 
 int thread_get_active_count()
 {
-    int count = ((thread_current() != idle_thread) && (thread_current()->status != THREAD_BLOCKED)) ? 1 : 0;
+    int count = ((thread_current() != idle_thread)) ? 1 : 0;
     int i;
     for(i = 0; i < PRI_MAX - PRI_MIN; ++i)
         count += list_size(&priority_queue[i]);
@@ -909,8 +913,8 @@ void thread_donate_priority(struct thread *t, struct lock *lock , struct thread 
 void init_mlfqs()
 {
     thread_mlfqs = true;
-    load_coeff_max = fp_int_to_fp_t(59) / 60;
-    load_coeff_min = fp_int_to_fp_t(1) / 60;
+    load_coeff_max = fp_conv_int(59) / 60;
+    load_coeff_min = fp_conv_int(1) / 60;
 }
 
 /* Offset of `stack' member within `struct thread'.
