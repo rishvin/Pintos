@@ -7,6 +7,7 @@
 #include "threads/interrupt.h"
 #include "threads/synch.h"
 #include "threads/thread.h"
+#include "lib/fp.h"
   
 /* See [8254] for hardware details of the 8254 timer chip. */
 
@@ -89,7 +90,6 @@ timer_elapsed (int64_t then)
 void
 timer_sleep (int64_t ticks) 
 {
-  int64_t start = timer_ticks ();
   enum intr_level old_level;
   
   struct thread *cur = NULL;
@@ -99,11 +99,9 @@ timer_sleep (int64_t ticks)
   old_level = intr_disable ();
   cur = thread_current ();
   cur->sleep_time = ticks;
-
-  //printf("Blocking current thread = %x\n", cur);
+  
   thread_block ();
   intr_set_level(old_level);
-  //printf("The thread has been unblocked\n");
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be

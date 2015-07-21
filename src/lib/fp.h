@@ -2,12 +2,13 @@
 #define _FP_H_
 
 #include <stdint.h>
+#define F 16384
 
-inline fp_t fp_conv_int(int x);
-inline int fp_get_int(fp_t x);
-inline int fp_get_frac(fp_t x);
-inline int fp_get_int_rnd(fp_t x);
-inline fp_t fp_mul(fp_t x, fp_t y);
-inline fp_t fp_div(fp_t x, fp_t y);
-inline fp_t fp_inc(fp_t x);
+#define FP_CONV_INT(X) ((X) * F)
+#define FP_GET_INT(X) ((X) / F)
+#define FP_GET_INT_RND(X) ((X) >= 0 ? (((X) + F / 2) / F) : (((X) - F / 2) / F))
+#define FP_MUL(X, Y) ((int)(((int64_t)(X) * (Y)) / F))
+#define FP_DIV(X, Y) ((int)(((int64_t)(X) * F) / Y))
+#define FP_INC(X) ((X) + F)
+
 #endif

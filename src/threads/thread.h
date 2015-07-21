@@ -26,6 +26,7 @@ typedef int tid_t;
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
 #define NICE_MIN -21                    /* Lowest nice value. */
+#define NICE_DEFAULT 0                  /* Default nice value. */
 #define NICE_MAX 21                     /* Highest nice value. */
 #define THREAD_LOCKS 32                 /* Max Lock limit by thread. */
 

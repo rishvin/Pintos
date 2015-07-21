@@ -48,9 +48,6 @@ typedef uint64_t uintmax_t;
 
 #define SIZE_MAX UINT32_MAX
 
-
-typedef uint32_t fp_t;
-#define FP_MAX_FRACTION INT16_MAX
-#define FP_MIN_INT  16384
+typedef int fp_t;
 
 #endif /* lib/stdint.h */
