@@ -19,7 +19,9 @@
 #include "threads/vaddr.h"
 
 static thread_func start_process NO_RETURN;
-static bool load (const char *cmdline, void (**eip) (void), void **esp);
+static bool load (int8_t *args, uint32_t count, void (**eip) (void), void **esp);
+static uint32_t tokenize_args(int8_t *in, int8_t *out);
+static void push_args(int8_t *src, int32_t len, int8_t *dest);
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -53,16 +55,25 @@ start_process (void *file_name_)
   char *file_name = file_name_;
   struct intr_frame if_;
   bool success;
+  int8_t *args;
+  uint32_t count;
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
+
+
+  /* Create page for command line argument and argument address. */
+  args = palloc_get_page(0);
+  count = tokenize_args(file_name_, args);
+
+  success = load (args, count, &if_.eip, &if_.esp);
 
   /* If load failed, quit. */
-  palloc_free_page (file_name);
+  palloc_free_page (args);
+  palloc_free_page(file_name);
   if (!success) 
     thread_exit ();
 
@@ -201,20 +212,21 @@ static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
                           bool writable);
 
+
 /* Loads an ELF executable from FILE_NAME into the current thread.
    Stores the executable's entry point into *EIP
    and its initial stack pointer into *ESP.
    Returns true if successful, false otherwise. */
 bool
-load (const char *file_name, void (**eip) (void), void **esp) 
+load (int8_t *args, uint32_t count, void (**eip) (void), void **esp)
 {
   struct thread *t = thread_current ();
   struct Elf32_Ehdr ehdr;
   struct file *file = NULL;
+  const char *file_name = (const char*)args;
   off_t file_ofs;
   bool success = false;
   int i;
-
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
   if (t->pagedir == NULL) 
@@ -427,7 +439,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 /* Create a minimal stack by mapping a zeroed page at the top of
    user virtual memory. */
 static bool
-setup_stack (void **esp) 
+setup_stack (void **esp)
 {
   uint8_t *kpage;
   bool success = false;
@@ -437,7 +449,7 @@ setup_stack (void **esp)
     {
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
       if (success)
-        *esp = PHYS_BASE;
+        *esp = PHYS_BASE - 12;
       else
         palloc_free_page (kpage);
     }
@@ -462,4 +474,74 @@ install_page (void *upage, void *kpage, bool writable)
      address, then map our page there. */
   return (pagedir_get_page (t->pagedir, upage) == NULL
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
+}
+
+
+/* Following function parses the command line argument,
+ * it then populates argument into argument page and address page.
+ */
+uint32_t tokenize_args(int8_t *in, int8_t *out)
+{
+    ASSERT(in && out);
+
+    uint32_t count = 0;
+    bool word = false;
+
+    for (; in && *in != '\0'; ++in)
+    {
+        if(*in == ' ')
+        {
+            if(word)
+            {
+                word = false;
+                *out = '\0';
+                ++out;
+                ++count;
+            }
+        }
+        else
+        {
+            word = true;
+            *out = *in;
+            ++out;
+            ++count;
+        }
+        ASSERT(count < PGSIZE);
+    }
+    return count;
+}
+
+static void push_args(int8_t *src, int32_t len, int8_t *dest)
+{
+    int8_t *cur = NULL;
+    int32_t argc = 0;
+    int32_t idx = 0;
+
+    int32_t *addr = palloc_get_page(0);
+    addr[idx] = 0;
+
+    for(cur = dest - len; cur != dest; ++cur, ++src)
+    {
+        if(*src == '\0')
+        {
+            addr[++idx] = 0;
+        }
+        else if(addr[idx] == 0)
+        {
+            ++argc;
+            addr[idx] = (uintptr_t)src;
+        }
+        *cur = *src;
+    }
+
+    cur = pg_round_up(dest - len);
+    cur = (int8_t*)((uintptr_t*)cur - argc);
+
+    for(idx = 0; idx < argc; ++idx)
+    {
+        *(uintptr_t*)cur = addr[idx];
+        cur = (int8_t*)((uintptr_t*)cur + 1);
+    }
+
+    palloc_free_page(addr);
 }

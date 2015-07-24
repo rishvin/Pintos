@@ -286,14 +286,18 @@ lock_release (struct lock *lock)
       int last_priority;
       int new_priority;
       int *priority;
+      enum intr_level old_level;
       
       last_priority = t->priority;
       priority = &t->priority;
   
       thread_remove_lock(t, lock);
       new_priority = thread_get_max_priority(t);
-  
+
+      old_level = intr_disable();
       thread_update_priority_queue(t, new_priority);
+      intr_set_level(old_level);
+
       *priority = new_priority;
       sema_up(&lock->semaphore);
       if(last_priority > *priority)
