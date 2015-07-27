@@ -20,8 +20,8 @@
 
 static thread_func start_process NO_RETURN;
 static bool load (int8_t *args, uint32_t count, void (**eip) (void), void **esp);
-static uint32_t tokenize_args(int8_t *in, int8_t *out);
-static void push_args(int8_t *src, int32_t len, int8_t *dest);
+static uint32_t trim_args(int8_t *in, int8_t *out);
+static int8_t* push_args(const int8_t *src, int32_t len, int8_t *dest);
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -57,7 +57,6 @@ start_process (void *file_name_)
   bool success;
   int8_t *args;
   uint32_t count;
-
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
@@ -67,7 +66,7 @@ start_process (void *file_name_)
 
   /* Create page for command line argument and argument address. */
   args = palloc_get_page(0);
-  count = tokenize_args(file_name_, args);
+  count = trim_args(file_name, args);
 
   success = load (args, count, &if_.eip, &if_.esp);
 
@@ -84,6 +83,7 @@ start_process (void *file_name_)
      we just point the stack pointer (%esp) to our stack frame
      and jump to it. */
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
+
   NOT_REACHED ();
 }
 
@@ -206,7 +206,8 @@ struct Elf32_Phdr
 #define PF_W 2          /* Writable. */
 #define PF_R 4          /* Readable. */
 
-static bool setup_stack (void **esp);
+//static
+bool setup_stack (int8_t *argv, uint32_t argc, void **esp);
 static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
@@ -314,7 +315,7 @@ load (int8_t *args, uint32_t count, void (**eip) (void), void **esp)
     }
 
   /* Set up stack. */
-  if (!setup_stack (esp))
+  if (!setup_stack (args, count, esp))
     goto done;
 
   /* Start address. */
@@ -438,8 +439,9 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 
 /* Create a minimal stack by mapping a zeroed page at the top of
    user virtual memory. */
-static bool
-setup_stack (void **esp)
+//static
+bool
+setup_stack (int8_t *argv, uint32_t argc, void **esp)
 {
   uint8_t *kpage;
   bool success = false;
@@ -449,7 +451,9 @@ setup_stack (void **esp)
     {
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
       if (success)
-        *esp = PHYS_BASE - 12;
+      {
+          *esp = push_args(argv, argc, PHYS_BASE);
+      }
       else
         palloc_free_page (kpage);
     }
@@ -480,7 +484,7 @@ install_page (void *upage, void *kpage, bool writable)
 /* Following function parses the command line argument,
  * it then populates argument into argument page and address page.
  */
-uint32_t tokenize_args(int8_t *in, int8_t *out)
+uint32_t trim_args(int8_t *in, int8_t *out)
 {
     ASSERT(in && out);
 
@@ -508,19 +512,22 @@ uint32_t tokenize_args(int8_t *in, int8_t *out)
         }
         ASSERT(count < PGSIZE);
     }
+    *out = '\0';
     return count;
 }
 
-static void push_args(int8_t *src, int32_t len, int8_t *dest)
+
+static int8_t* push_args(const int8_t *src, int32_t len, int8_t *dest)
 {
     int8_t *cur = NULL;
     int32_t argc = 0;
     int32_t idx = 0;
+    uintptr_t argv;
 
-    int32_t *addr = palloc_get_page(0);
+    uintptr_t *addr = palloc_get_page(0);
     addr[idx] = 0;
 
-    for(cur = dest - len; cur != dest; ++cur, ++src)
+    for(cur = dest - len; cur <= dest; ++cur, ++src)
     {
         if(*src == '\0')
         {
@@ -534,14 +541,24 @@ static void push_args(int8_t *src, int32_t len, int8_t *dest)
         *cur = *src;
     }
 
-    cur = pg_round_up(dest - len);
-    cur = (int8_t*)((uintptr_t*)cur - argc);
+    cur = (int8_t*)align_word(dest - len);
+    cur = (int8_t*)get_prev_addr(cur);
+    *(uintptr_t*)cur = 0;
 
-    for(idx = 0; idx < argc; ++idx)
+    for(idx = argc - 1; idx >= 0; --idx)
     {
+        cur = (int8_t*)get_prev_addr(cur);
         *(uintptr_t*)cur = addr[idx];
-        cur = (int8_t*)((uintptr_t*)cur + 1);
     }
 
+    argv = (uintptr_t)cur;
+    cur = (int8_t*)get_prev_addr(cur);
+    *(uintptr_t*)cur = argv;
+    cur = (int8_t*)get_prev_addr(cur);
+    *(uintptr_t*)cur = argc;
+    cur = (int8_t*)get_prev_addr(cur);
+    *(uintptr_t*)cur = 0;
+
     palloc_free_page(addr);
+    return cur;
 }

@@ -1,4 +1,4 @@
-#ifndef THREADS_VADDR_H
+#ifndef THREADS_VADDR_H1
 #define THREADS_VADDR_H
 
 #include <debug.h>
@@ -84,6 +84,24 @@ vtop (const void *vaddr)
   ASSERT (is_kernel_vaddr (vaddr));
 
   return (uintptr_t) vaddr - (uintptr_t) PHYS_BASE;
+}
+
+static inline uintptr_t
+align_word(const void *addr)
+{
+    return (uintptr_t)addr & (~(sizeof(uintptr_t) - 1));
+}
+
+static inline void*
+get_next_addr(void *addr)
+{
+    return (((intptr_t*)(addr)) + 1);
+}
+
+static inline void*
+get_prev_addr(void *addr)
+{
+    return (((intptr_t*)(addr)) - 1);
 }
 
 #endif /* threads/vaddr.h */
