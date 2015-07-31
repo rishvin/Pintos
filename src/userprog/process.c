@@ -99,6 +99,7 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
+    //while(1);
   return -1;
 }
 
@@ -516,14 +517,13 @@ uint32_t trim_args(int8_t *in, int8_t *out)
     return count;
 }
 
-
+/* This following function prepares the stack for user. */
 static int8_t* push_args(const int8_t *src, int32_t len, int8_t *dest)
 {
     int8_t *cur = NULL;
     int32_t argc = 0;
     int32_t idx = 0;
     uintptr_t argv;
-
     uintptr_t *addr = palloc_get_page(0);
     addr[idx] = 0;
 
@@ -536,7 +536,7 @@ static int8_t* push_args(const int8_t *src, int32_t len, int8_t *dest)
         else if(addr[idx] == 0)
         {
             ++argc;
-            addr[idx] = (uintptr_t)src;
+            addr[idx] = (uintptr_t)cur;
         }
         *cur = *src;
     }
