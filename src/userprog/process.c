@@ -527,7 +527,8 @@ static int8_t* push_args(const int8_t *src, int32_t len, int8_t *dest)
     uintptr_t *addr = palloc_get_page(0);
     addr[idx] = 0;
 
-    for(cur = dest - len; cur <= dest; ++cur, ++src)
+    // Copy the bytes to page and also keep track of the start of each argument.
+    for(cur = dest - len - 1; cur <= dest; ++cur, ++src)
     {
         if(*src == '\0')
         {
@@ -541,11 +542,11 @@ static int8_t* push_args(const int8_t *src, int32_t len, int8_t *dest)
         *cur = *src;
     }
 
-    cur = (int8_t*)align_word(dest - len);
+    cur = (int8_t*)align_word(dest - len); // Allign to the word boundary.
     cur = (int8_t*)get_prev_addr(cur);
-    *(uintptr_t*)cur = 0;
+    *(uintptr_t*)cur = 0;                  // Push sentinal.
 
-    for(idx = argc - 1; idx >= 0; --idx)
+    for(idx = argc - 1; idx >= 0; --idx)    // Start pushing the address of arguments.
     {
         cur = (int8_t*)get_prev_addr(cur);
         *(uintptr_t*)cur = addr[idx];
@@ -553,11 +554,11 @@ static int8_t* push_args(const int8_t *src, int32_t len, int8_t *dest)
 
     argv = (uintptr_t)cur;
     cur = (int8_t*)get_prev_addr(cur);
-    *(uintptr_t*)cur = argv;
+    *(uintptr_t*)cur = argv;                // Push the address of the beginning of arguments.
     cur = (int8_t*)get_prev_addr(cur);
-    *(uintptr_t*)cur = argc;
+    *(uintptr_t*)cur = argc;                // Push the argument count.
     cur = (int8_t*)get_prev_addr(cur);
-    *(uintptr_t*)cur = 0;
+    *(uintptr_t*)cur = 0;                   // Push sentinal.
 
     palloc_free_page(addr);
     return cur;

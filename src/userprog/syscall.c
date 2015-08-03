@@ -5,7 +5,49 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
+struct argv
+{
+    void *arg[3];
+};
+
+typedef void (syscall_fn)(struct argv *args, uint32_t *eax);
+
+struct syscall
+{
+    syscall_fn *fn;
+    int argc;
+};
+
 static void syscall_handler (struct intr_frame *);
+static int syscall_get(intptr_t *num);
+static void syscall_get_args(intptr_t *addr, int argc, struct argv *args);
+static void syscall_exit(struct argv *args, uint32_t *eax);
+static void syscall_write(struct argv *args, uint32_t *eax);
+
+static
+struct syscall syscall_tbl[] =
+{
+    {NULL,                      0},
+    {syscall_exit,              1},
+    {NULL,                      0},
+    {NULL,                      0},
+    {NULL,                      0},
+    {NULL,                      0},
+    {NULL,                      0},
+    {NULL,                      0},
+    {NULL,                      0},
+    {syscall_write,             3},
+    {NULL,                      0},
+    {NULL,                      0},
+    {NULL,                      0},
+    {NULL,                      0},
+    {NULL,                      0},
+    {NULL,                      0},
+    {NULL,                      0},
+    {NULL,                      0},
+    {NULL,                      0},
+    {NULL,                      0}
+};
 
 void
 syscall_init (void) 
@@ -13,81 +55,65 @@ syscall_init (void)
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
 }
 
-static inline void
-return_value(struct intr_frame *f, uint32_t ret)
-{
-    f->eax = ret;
-}
-
-static inline int
-syscall_type(struct intr_frame *f)
-{
-    return (int)*((intptr_t *)(f->esp));
-}
-
-static inline void*
-syscall_begin_arg(struct intr_frame *f)
-{
-    return get_next_addr(f->esp);
-}
-
-static void
-syscall_exit(struct intr_frame *f)
-{
-    return_value(f, *(uint32_t*)syscall_begin_arg(f));
-}
-
-static void
-syscall_write(struct intr_frame *f)
-{
-    void *addr;
-    void *buffer;
-
-    int fd;
-    unsigned size;
-
-    addr = syscall_begin_arg(f);
-    fd = *(int*)addr;
-
-    addr = get_next_addr(addr);
-    buffer = addr;
-
-    addr = get_next_addr(addr);
-    size = *(unsigned*)addr;
-
-    if(fd == STDOUT_FILENO)
-    {
-        //putbuf(buffer, size);
-    }
-    return_value(f, 0);
-}
-
 static void
 syscall_handler (struct intr_frame *f)
 {
+  void *addr = f->esp;
+  int sys_num = syscall_get(addr);
+  struct syscall *sysc = &syscall_tbl[sys_num];
+  struct argv args;
+  syscall_get_args(addr, sysc->argc, &args);
+  sysc->fn(&args, &f->eax);
+}
 
-  switch(syscall_type(f))
-  {
-      case SYS_HALT: break;
-      case SYS_EXIT: syscall_exit(f); break;
-      case SYS_EXEC: break;
-      case SYS_WAIT: break;
-      case SYS_CREATE: break;
-      case SYS_REMOVE: break;
-      case SYS_OPEN: break;
-      case SYS_FILESIZE: break;
-      case SYS_READ: break;
-      case SYS_WRITE: syscall_write(f); break;
-      case SYS_SEEK: break;
-      case SYS_TELL: break;
-      case SYS_CLOSE: break;
-      case SYS_MMAP: break;
-      case SYS_MUNMAP: break;
-      case SYS_CHDIR: break;
-      case SYS_MKDIR: break;
-      case SYS_READDIR: break;
-      case SYS_ISDIR: break;
-      case SYS_INUMBER: break;
-  }
-  thread_exit ();
+static int
+syscall_get(intptr_t *num)
+{
+    if(!is_user_vaddr(num) || *num < SYS_HALT || *num > SYS_INUMBER)
+        thread_exit();
+    return *num;
+}
+
+static void
+syscall_get_args(intptr_t *addr, int argc, struct argv *args)
+{
+    int i;
+    for(i = 1; i <= argc; ++i)
+    {
+        if(!is_user_vaddr(addr + i))
+            thread_exit();
+        args->arg[i - 1] = *(addr + i);
+    }
+}
+
+static void
+syscall_exit(struct argv *args, uint32_t *eax)
+{
+    *eax = (uint32_t)args->arg[0];
+    thread_exit ();
+}
+
+static void
+syscall_write(struct argv *args, uint32_t *eax)
+{
+    int fd;
+    const char *buff;
+    unsigned size;
+
+    fd = (int)args->arg[0];
+    if(fd < STDIN_FILENO)
+        thread_exit();
+
+    buff = (const char*)args->arg[1];
+    if(!is_user_vaddr(buff) || !is_user_vaddr(buff + size))
+        thread_exit();
+
+    size = (unsigned)args->arg[2];
+
+    if(fd == STDOUT_FILENO)
+    {
+        putbuf(buff, size);
+    }
+
+    *eax = 0;
 }
