@@ -21,13 +21,14 @@ struct syscall
 static void syscall_handler (struct intr_frame *);
 static int syscall_get(intptr_t *num);
 static void syscall_get_args(intptr_t *addr, int argc, struct argv *args);
+static void syscall_halt(struct argv *args, uint32_t *eax);
 static void syscall_exit(struct argv *args, uint32_t *eax);
 static void syscall_write(struct argv *args, uint32_t *eax);
 
 static
 struct syscall syscall_tbl[] =
 {
-    {NULL,                      0},
+    {syscall_halt,              0},
     {syscall_exit,              1},
     {NULL,                      0},
     {NULL,                      0},
@@ -87,9 +88,16 @@ syscall_get_args(intptr_t *addr, int argc, struct argv *args)
 }
 
 static void
+syscall_halt(struct argv *args UNUSED, uint32_t *eax UNUSED)
+{
+    shutdown_power_off();
+}
+
+static void
 syscall_exit(struct argv *args, uint32_t *eax)
 {
     *eax = (uint32_t)args->arg[0];
+    printf ("%s: exit(%d)\n", thread_current()->name, *eax);
     thread_exit ();
 }
 

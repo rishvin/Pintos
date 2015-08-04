@@ -19,9 +19,8 @@
 #include "threads/vaddr.h"
 
 static thread_func start_process NO_RETURN;
-static bool load (int8_t *args, uint32_t count, void (**eip) (void), void **esp);
-static uint32_t trim_args(int8_t *in, int8_t *out);
-static int8_t* push_args(const int8_t *src, int32_t len, int8_t *dest);
+static bool load (const char* file_name, void (**eip) (void), void **esp);
+static char* push_args(char *src, char *dest);
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -31,6 +30,7 @@ tid_t
 process_execute (const char *file_name) 
 {
   char *fn_copy;
+  char *procname;
   tid_t tid;
 
   /* Make a copy of FILE_NAME.
@@ -39,24 +39,23 @@ process_execute (const char *file_name)
   if (fn_copy == NULL)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
-
+  printf("::::%x\n", fn_copy);
+  procname = strtok_r(fn_copy, " ", &fn_copy);
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (procname, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
-  return tid;
+    palloc_free_page (fn_copy);
+    return tid;
 }
 
 /* A thread function that loads a user process and starts it
    running. */
 static void
-start_process (void *file_name_)
+start_process (void *args)
 {
-  char *file_name = file_name_;
   struct intr_frame if_;
+  const char *procname = thread_current()->name;
   bool success;
-  int8_t *args;
-  uint32_t count;
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
@@ -65,15 +64,13 @@ start_process (void *file_name_)
 
 
   /* Create page for command line argument and argument address. */
-  args = palloc_get_page(0);
-  count = trim_args(file_name, args);
-
-  success = load (args, count, &if_.eip, &if_.esp);
+  success = load (procname, &if_.eip, &if_.esp);
+  if(success)
+      if_.esp = push_args(args, if_.esp);
 
   /* If load failed, quit. */
-  palloc_free_page (args);
-  palloc_free_page(file_name);
-  if (!success) 
+  palloc_free_page ((char*)args - strlen(procname) - 1);
+  if (!success)
     thread_exit ();
 
   /* Start the user process by simulating a return from an
@@ -208,7 +205,7 @@ struct Elf32_Phdr
 #define PF_R 4          /* Readable. */
 
 //static
-bool setup_stack (int8_t *argv, uint32_t argc, void **esp);
+bool setup_stack (void **esp);
 static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
@@ -220,12 +217,11 @@ static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
    and its initial stack pointer into *ESP.
    Returns true if successful, false otherwise. */
 bool
-load (int8_t *args, uint32_t count, void (**eip) (void), void **esp)
+load (const char *file_name, void (**eip) (void), void **esp)
 {
   struct thread *t = thread_current ();
   struct Elf32_Ehdr ehdr;
   struct file *file = NULL;
-  const char *file_name = (const char*)args;
   off_t file_ofs;
   bool success = false;
   int i;
@@ -316,7 +312,7 @@ load (int8_t *args, uint32_t count, void (**eip) (void), void **esp)
     }
 
   /* Set up stack. */
-  if (!setup_stack (args, count, esp))
+  if (!setup_stack (esp))
     goto done;
 
   /* Start address. */
@@ -442,7 +438,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
    user virtual memory. */
 //static
 bool
-setup_stack (int8_t *argv, uint32_t argc, void **esp)
+setup_stack (void **esp)
 {
   uint8_t *kpage;
   bool success = false;
@@ -453,7 +449,7 @@ setup_stack (int8_t *argv, uint32_t argc, void **esp)
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
       if (success)
       {
-          *esp = push_args(argv, argc, PHYS_BASE);
+          *esp = PHYS_BASE;
       }
       else
         palloc_free_page (kpage);
@@ -482,83 +478,52 @@ install_page (void *upage, void *kpage, bool writable)
 }
 
 
-/* Following function parses the command line argument,
- * it then populates argument into argument page and address page.
- */
-uint32_t trim_args(int8_t *in, int8_t *out)
-{
-    ASSERT(in && out);
-
-    uint32_t count = 0;
-    bool word = false;
-
-    for (; in && *in != '\0'; ++in)
-    {
-        if(*in == ' ')
-        {
-            if(word)
-            {
-                word = false;
-                *out = '\0';
-                ++out;
-                ++count;
-            }
-        }
-        else
-        {
-            word = true;
-            *out = *in;
-            ++out;
-            ++count;
-        }
-        ASSERT(count < PGSIZE);
-    }
-    *out = '\0';
-    return count;
-}
-
 /* This following function prepares the stack for user. */
-static int8_t* push_args(const int8_t *src, int32_t len, int8_t *dest)
+static char* push_args(char *src, char *dest)
 {
-    int8_t *cur = NULL;
+    char *cur = NULL;
     int32_t argc = 0;
     int32_t idx = 0;
     uintptr_t argv;
-    uintptr_t *addr = palloc_get_page(0);
+    uintptr_t *addr;
+
+    if(!is_user_vaddr(src) || *src == '\0')
+        return dest;
+
+    addr= palloc_get_page(0);
     addr[idx] = 0;
 
     // Copy the bytes to page and also keep track of the start of each argument.
-    for(cur = dest - len - 1; cur <= dest; ++cur, ++src)
+    while((cur = strtok_r(NULL, " ", &src)))
     {
-        if(*src == '\0')
-        {
-            addr[++idx] = 0;
-        }
-        else if(addr[idx] == 0)
-        {
-            ++argc;
-            addr[idx] = (uintptr_t)cur;
-        }
-        *cur = *src;
+        dest -= strlen(cur) + 1;
+        strlcpy(dest, cur, strlen(cur) + 1);
+        addr[argc++] = (uintptr_t)dest;
+        printf("%x\n", addr[argc - 1]);
     }
 
-    cur = (int8_t*)align_word(dest - len); // Allign to the word boundary.
-    cur = (int8_t*)get_prev_addr(cur);
-    *(uintptr_t*)cur = 0;                  // Push sentinal.
+    cur = thread_current()->name;
+    dest -= strlen(cur) + 1;
+    strlcpy(dest, cur, strlen(cur) + 1);
+    addr[argc++] = (uintptr_t)dest;
 
-    for(idx = argc - 1; idx >= 0; --idx)    // Start pushing the address of arguments.
+    cur = align_word(dest); // Allign to the word boundary.
+    cur = get_prev_addr(cur);
+    *(uintptr_t*)cur = 0; // Push sentinal.
+
+    for(idx = 0; idx < argc; ++idx) // Start pushing the address of arguments.
     {
-        cur = (int8_t*)get_prev_addr(cur);
-        *(uintptr_t*)cur = addr[idx];
+        cur = get_prev_addr(cur);
+        *(uintptr_t*)cur = (uintptr_t)addr[idx];
     }
 
     argv = (uintptr_t)cur;
-    cur = (int8_t*)get_prev_addr(cur);
-    *(uintptr_t*)cur = argv;                // Push the address of the beginning of arguments.
-    cur = (int8_t*)get_prev_addr(cur);
-    *(uintptr_t*)cur = argc;                // Push the argument count.
-    cur = (int8_t*)get_prev_addr(cur);
-    *(uintptr_t*)cur = 0;                   // Push sentinal.
+    cur = (char*)get_prev_addr(cur);
+    *(uintptr_t*)cur = (uintptr_t)argv; // Push the address of the beginning of arguments.
+    cur = (char*)get_prev_addr(cur);
+    *(uintptr_t*)cur = (uintptr_t)argc; // Push the argument count.
+    cur = (char*)get_prev_addr(cur);
+    *(uintptr_t*)cur = 0;  // Push sentinal.
 
     palloc_free_page(addr);
     return cur;
