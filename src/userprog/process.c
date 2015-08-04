@@ -17,6 +17,22 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "threads/synch.h"
+
+struct spawn_node
+{
+    struct semaphore *sema;
+    char *args;
+    tid_t tid;
+};
+
+static struct spawn_node* spawn_node_alloc(bool sync);
+static void spawn_node_free(struct spawn_node *snode);
+inline bool spawn_node_is_sync_set(struct spawn_node *snode);
+inline static void spawn_node_wait(struct spawn_node *snode);
+inline static void spawn_node_awake(struct spawn_node *snode);
+
+static tid_t process_execute_(const char *file_name, bool sync);
 
 static thread_func start_process NO_RETURN;
 static bool load (const char* file_name, void (**eip) (void), void **esp);
@@ -26,35 +42,103 @@ static char* push_args(char *src, char *dest);
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
+
+
+static struct spawn_node*
+spawn_node_alloc(bool sync)
+{
+    struct spawn_node *snode = (struct spawn_node *)malloc(sizeof(struct spawn_node));
+    if(snode)
+    {
+        if(sync)
+        {
+            snode->sema = malloc(sizeof(struct semaphore));
+            sema_init(snode->sema, 0);
+        }
+        else snode->sema = NULL;
+    }
+    return snode;
+}
+
+static void
+spawn_node_free(struct spawn_node *snode)
+{
+    if(snode->sema)
+        free(snode->sema);
+    free(snode);
+}
+
+inline bool spawn_node_is_sync_set(struct spawn_node *snode)
+{
+    return snode->sema != NULL;
+}
+
+inline static void
+spawn_node_wait(struct spawn_node *snode)
+{
+    sema_down(snode->sema);
+}
+
+inline static void
+spawn_node_awake(struct spawn_node *snode)
+{
+    sema_up(snode->sema);
+}
+
 tid_t
-process_execute (const char *file_name) 
+process_execute(const char *file_name)
+{
+    return process_execute_(file_name, false);
+}
+
+tid_t
+process_execute_sync(const char *file_name)
+{
+    return process_execute_(file_name, true);
+}
+
+static tid_t
+process_execute_(const char *file_name, bool sync)
 {
   char *fn_copy;
-  char *procname;
+  char *proc_name;
   tid_t tid;
+
+  struct spawn_node *snode = spawn_node_alloc(sync);
 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page (0);
   if (fn_copy == NULL)
     return TID_ERROR;
-  strlcpy (fn_copy, file_name, PGSIZE);
-  printf("::::%x\n", fn_copy);
-  procname = strtok_r(fn_copy, " ", &fn_copy);
+
+  strlcpy(fn_copy, file_name, PGSIZE);
+  proc_name = strtok_r(fn_copy, " ", &fn_copy);
+  snode->args = fn_copy;
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (procname, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (proc_name, PRI_DEFAULT, start_process, snode);
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy);
-    return tid;
+      palloc_free_page (fn_copy);
+   else if(sync)
+   {
+       spawn_node_wait(snode);
+       if(snode->tid == TID_ERROR)
+           tid = TID_ERROR;
+       spawn_node_free(snode);
+    }
+     return tid;
 }
 
 /* A thread function that loads a user process and starts it
    running. */
-static void
-start_process (void *args)
+ void
+start_process (void *data)
 {
+  struct spawn_node *snode = (struct spawn_node*)data;
   struct intr_frame if_;
   const char *procname = thread_current()->name;
+
   bool success;
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
@@ -66,12 +150,37 @@ start_process (void *args)
   /* Create page for command line argument and argument address. */
   success = load (procname, &if_.eip, &if_.esp);
   if(success)
-      if_.esp = push_args(args, if_.esp);
+      if_.esp = push_args(snode->args, if_.esp);
 
   /* If load failed, quit. */
-  palloc_free_page ((char*)args - strlen(procname) - 1);
+  if(snode->args && snode->args[0] != '\0')
+      snode->args = snode->args - strlen(procname) - 1;
+  else
+      snode->args = snode->args - strlen(procname);
+
+  palloc_free_page (snode->args);
+
   if (!success)
-    thread_exit ();
+  {
+      if(spawn_node_is_sync_set(snode))
+      {
+          snode->tid = -1;
+          spawn_node_awake(snode);
+      }
+      else
+          spawn_node_free(snode);
+      thread_exit ();
+  }
+  else
+  {
+      if(spawn_node_is_sync_set(snode))
+      {
+          snode->tid = 0;
+          spawn_node_awake(snode);
+      }
+      else
+          spawn_node_free(snode);
+  }
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -487,9 +596,6 @@ static char* push_args(char *src, char *dest)
     uintptr_t argv;
     uintptr_t *addr;
 
-    if(!is_user_vaddr(src) || *src == '\0')
-        return dest;
-
     addr= palloc_get_page(0);
     addr[idx] = 0;
 
@@ -499,7 +605,6 @@ static char* push_args(char *src, char *dest)
         dest -= strlen(cur) + 1;
         strlcpy(dest, cur, strlen(cur) + 1);
         addr[argc++] = (uintptr_t)dest;
-        printf("%x\n", addr[argc - 1]);
     }
 
     cur = thread_current()->name;

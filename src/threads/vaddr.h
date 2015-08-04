@@ -86,10 +86,10 @@ vtop (const void *vaddr)
   return (uintptr_t) vaddr - (uintptr_t) PHYS_BASE;
 }
 
-static inline uintptr_t
+static inline void*
 align_word(const void *addr)
 {
-    return (uintptr_t)addr & (~(sizeof(uintptr_t) - 1));
+    return (void*)((uintptr_t)addr & (~(sizeof(uintptr_t) - 1)));
 }
 
 static inline void*

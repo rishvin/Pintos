@@ -4,6 +4,8 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "devices/shutdown.h"
+#include "userprog/process.h"
 
 struct argv
 {
@@ -23,6 +25,7 @@ static int syscall_get(intptr_t *num);
 static void syscall_get_args(intptr_t *addr, int argc, struct argv *args);
 static void syscall_halt(struct argv *args, uint32_t *eax);
 static void syscall_exit(struct argv *args, uint32_t *eax);
+static void syscall_exec(struct argv *args, uint32_t *eax);
 static void syscall_write(struct argv *args, uint32_t *eax);
 
 static
@@ -30,7 +33,7 @@ struct syscall syscall_tbl[] =
 {
     {syscall_halt,              0},
     {syscall_exit,              1},
-    {NULL,                      0},
+    {syscall_exec,              1},
     {NULL,                      0},
     {NULL,                      0},
     {NULL,                      0},
@@ -83,7 +86,7 @@ syscall_get_args(intptr_t *addr, int argc, struct argv *args)
     {
         if(!is_user_vaddr(addr + i))
             thread_exit();
-        args->arg[i - 1] = *(addr + i);
+        args->arg[i - 1] = (void*)*(addr + i);
     }
 }
 
@@ -102,6 +105,14 @@ syscall_exit(struct argv *args, uint32_t *eax)
 }
 
 static void
+syscall_exec(struct argv *args, uint32_t *eax)
+{
+    const char *filename = (const char*)args->arg[0];
+    *eax = process_execute_sync(filename);
+
+}
+
+static void
 syscall_write(struct argv *args, uint32_t *eax)
 {
     int fd;
@@ -113,10 +124,10 @@ syscall_write(struct argv *args, uint32_t *eax)
         thread_exit();
 
     buff = (const char*)args->arg[1];
+    size = (unsigned)args->arg[2];
+
     if(!is_user_vaddr(buff) || !is_user_vaddr(buff + size))
         thread_exit();
-
-    size = (unsigned)args->arg[2];
 
     if(fd == STDOUT_FILENO)
     {
