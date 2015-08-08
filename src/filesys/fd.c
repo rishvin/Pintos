@@ -68,7 +68,7 @@ int fd_insert(struct file *file)
     struct fd_node *node;
     size_t idx;
 
-    idx = bitmap_scan(fd_bm, 0, bitmap_size(fd_bm), true);
+    idx = bitmap_scan(fd_bm, 0, 1, false);
     if(idx == BITMAP_ERROR)
         return FD_INVALID;
 
@@ -98,7 +98,7 @@ struct file* fd_remove(int fd)
         return false;
 
     if(!bitmap_test(fd_bm, FD_TO_IDX(fd)))
-        return false;
+        return NULL;
 
     node.fd = fd;
     bitmap_set(fd_bm, FD_TO_IDX(fd), false);
@@ -108,4 +108,22 @@ struct file* fd_remove(int fd)
     file = ret->file;
     free(ret);
     return file;
+}
+
+struct file* fd_search(int fd)
+{
+    struct fd_node node;
+    struct fd_node *ret;
+
+    if(fd < FD_MIN || fd > FD_MAX)
+        return false;
+
+    if(!bitmap_test(fd_bm, FD_TO_IDX(fd)))
+        return NULL;
+
+    node.fd = fd;
+    ret = hash_find(&fd_hash, &node.elem);
+    if(ret == NULL)
+        return NULL;
+    return ret->file;
 }

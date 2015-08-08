@@ -16,5 +16,6 @@ void fd_init(void);
 void fd_destroy(void);
 int fd_insert(struct file *file);
 struct file* fd_remove(int fd);
+struct file* fd_search(int fd);
 
 #endif /* PINTOS_SRC_FILESYS_FD_H_ */

@@ -1,11 +1,16 @@
 #include "userprog/syscall.h"
 #include <stdio.h>
+#include <string.h>
 #include <syscall-nr.h>
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "devices/shutdown.h"
+#include "devices/input.h"
 #include "userprog/process.h"
+#include "filesys/filesys.h"
+#include "filesys/fd.h"
+
 
 struct argv
 {
@@ -26,6 +31,11 @@ static void syscall_get_args(intptr_t *addr, int argc, struct argv *args);
 static void syscall_halt(struct argv *args, uint32_t *eax);
 static void syscall_exit(struct argv *args, uint32_t *eax);
 static void syscall_exec(struct argv *args, uint32_t *eax);
+static void syscall_create(struct argv *args, uint32_t *eax);
+static void syscall_remove(struct argv *args, uint32_t *eax);
+static void syscall_open(struct argv *args, uint32_t *eax);
+static void syscall_size(struct argv *args, uint32_t *eax);
+static void syscall_read(struct argv *args, uint32_t *eax);
 static void syscall_write(struct argv *args, uint32_t *eax);
 
 static
@@ -35,11 +45,11 @@ struct syscall syscall_tbl[] =
     {syscall_exit,              1},
     {syscall_exec,              1},
     {NULL,                      0},
-    {NULL,                      0},
-    {NULL,                      0},
-    {NULL,                      0},
-    {NULL,                      0},
-    {NULL,                      0},
+    {syscall_create,            2},
+    {syscall_remove,            1},
+    {syscall_open,              1},
+    {syscall_size,              1},
+    {syscall_read,              3},
     {syscall_write,             3},
     {NULL,                      0},
     {NULL,                      0},
@@ -113,6 +123,47 @@ syscall_exec(struct argv *args, uint32_t *eax)
 }
 
 static void
+syscall_read(struct argv *args, uint32_t *eax)
+{
+    int fd;
+    char *buff;
+    unsigned size;
+
+    fd = (int)args->arg[0];
+    if(fd < STDIN_FILENO)
+        thread_exit();
+
+    buff = (char*)args->arg[1];
+    size = (unsigned)args->arg[2];
+
+    if(!buff
+    || !is_user_vaddr(buff)
+    || !is_user_vaddr(buff + size))
+        thread_exit();
+
+    if(fd == STDOUT_FILENO)
+        *eax = 0;
+    else if(fd == STDIN_FILENO)
+    {
+        if(size >= sizeof(uint8_t))
+        {
+            buff[0] = input_getc();
+            *eax = sizeof(uint8_t);
+        }
+        else
+            *eax = 0;
+    }
+    else
+    {
+        struct file *file = fd_search(fd);
+        if(!file)
+            *eax = 0;
+        else
+            *eax = file_read(file, buff, size);
+    }
+}
+
+static void
 syscall_write(struct argv *args, uint32_t *eax)
 {
     int fd;
@@ -126,13 +177,83 @@ syscall_write(struct argv *args, uint32_t *eax)
     buff = (const char*)args->arg[1];
     size = (unsigned)args->arg[2];
 
-    if(!is_user_vaddr(buff) || !is_user_vaddr(buff + size))
+    if(!buff
+    || !is_user_vaddr(buff)
+    || !is_user_vaddr(buff + size))
         thread_exit();
 
-    if(fd == STDOUT_FILENO)
+    if(fd == STDIN_FILENO)
+        *eax = 0;
+    else if(fd == STDOUT_FILENO)
     {
         putbuf(buff, size);
+        *eax = size;
     }
+    else
+    {
+        struct file *file = fd_search(fd);
+        if(!file)
+            *eax = 0;
+        else
+            *eax = file_write(file, buff, size);
+    }
+}
 
-    *eax = 0;
+static void
+syscall_create(struct argv *args, uint32_t *eax)
+{
+    const char *name;
+    off_t size;
+
+    name = (const char*)args->arg[0];
+    if(!name
+    || !is_user_vaddr(name)
+    || !is_user_vaddr(name + strlen(name)))
+        thread_exit();
+    size = (off_t)args->arg[1];
+
+    *eax = filesys_create (name, size);
+}
+
+static void
+syscall_remove(struct argv *args, uint32_t *eax)
+{
+    const char *name;
+    name = (const char*)args->arg[0];
+    if(!name
+    || !is_user_vaddr(name)
+    || !is_user_vaddr(name + strlen(name)))
+        thread_exit();
+    *eax = filesys_remove(name);
+}
+
+static void
+syscall_open(struct argv *args, uint32_t *eax)
+{
+    const char *name;
+    struct file *file;
+    name = (const char*)args->arg[0];
+    if(!name
+    ||!is_user_vaddr(name)
+    || !is_user_vaddr(name + strlen(name)))
+        thread_exit();
+    file = filesys_open(name);
+    if(!file)
+        *eax = FD_INVALID;
+    else
+        *eax = fd_insert(file);
+}
+
+static void
+syscall_size(struct argv *args, uint32_t *eax)
+{
+    int fd;
+    struct file *file;
+    fd = (int)args->arg[0];
+    if(fd < FD_MIN || fd > FD_MAX)
+        *eax = -1;
+    file = fd_search(fd);
+    if(!file)
+        *eax = -1;
+    else *eax = file_length(file);
 }
