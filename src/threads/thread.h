@@ -4,6 +4,9 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#ifdef USERPROG
+#include "threads/synch.h"
+#endif
 
 struct lock;
 
@@ -35,6 +38,18 @@ struct thread_lock
     struct lock *lock;
     struct thread *child_thread;
 };
+
+/* Used by parent thread to hold child process relationship. */
+#ifdef USERPROG
+struct process
+{
+    struct lock lock;
+    struct condition cond;
+    struct list list;
+    tid_t ptid;
+    uint32_t ref_count;
+};
+#endif
 
 /* A kernel thread or user process.
 
@@ -118,6 +133,7 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
+    struct process *proc;
 #endif
 
 /* Used for mlfq. */
@@ -182,5 +198,7 @@ void thread_donate_priority(struct thread *t, struct lock *lock , struct thread 
 void init_mlfqs(void);
 void thread_calc_load_avg(void);
 int thread_mlfq_get_priority(struct thread *t);
+
+struct thread* thread_search(tid_t tid);
 
 #endif /* threads/thread.h */

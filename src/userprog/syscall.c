@@ -115,6 +115,7 @@ static void
 syscall_exit(struct argv *args, uint32_t *eax)
 {
     *eax = (uint32_t)args->arg[0];
+    process_notify(*eax);
     printf ("%s: exit(%d)\n", thread_current()->name, *eax);
     thread_exit ();
 }

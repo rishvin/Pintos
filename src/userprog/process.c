@@ -14,6 +14,7 @@
 #include "threads/flags.h"
 #include "threads/init.h"
 #include "threads/interrupt.h"
+#include "threads/malloc.h"
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
@@ -23,14 +24,28 @@ struct spawn_node
 {
     struct semaphore *sema;
     char *args;
+    tid_t ptid;
     tid_t tid;
 };
 
+struct child_node
+{
+    tid_t tid;
+    int *status;
+    struct list_elem elem;
+};
+
+/* Function related to exec. */
 static struct spawn_node* spawn_node_alloc(bool sync);
 static void spawn_node_free(struct spawn_node *snode);
 inline bool spawn_node_is_sync_set(struct spawn_node *snode);
 inline static void spawn_node_wait(struct spawn_node *snode);
 inline static void spawn_node_awake(struct spawn_node *snode);
+
+/* Function related to wait. */
+static void process_insert_child(tid_t ctid);
+static void process_remove_child(struct child_node *child);
+static struct child_node* process_search_child(struct process *proc, tid_t tid);
 
 static tid_t process_execute_(const char *file_name, bool sync);
 
@@ -47,7 +62,9 @@ static char* push_args(char *src, char *dest);
 static struct spawn_node*
 spawn_node_alloc(bool sync)
 {
-    struct spawn_node *snode = (struct spawn_node *)malloc(sizeof(struct spawn_node));
+    struct spawn_node *snode;
+    snode = (struct spawn_node *)malloc(sizeof(struct spawn_node));
+    snode->ptid = thread_current()->tid;
     if(snode)
     {
         if(sync)
@@ -120,14 +137,18 @@ process_execute_(const char *file_name, bool sync)
   tid = thread_create (proc_name, PRI_DEFAULT, start_process, snode);
   if (tid == TID_ERROR)
       palloc_free_page (fn_copy);
-   else if(sync)
+   else
    {
-       spawn_node_wait(snode);
-       if(snode->tid == TID_ERROR)
-           tid = TID_ERROR;
-       spawn_node_free(snode);
-    }
-     return tid;
+       process_insert_child(tid);
+       if(sync)
+       {
+           spawn_node_wait(snode);
+           if(snode->tid == TID_ERROR)
+               tid = TID_ERROR;
+           spawn_node_free(snode);
+       }
+   }
+   return tid;
 }
 
 /* A thread function that loads a user process and starts it
@@ -146,6 +167,7 @@ start_process (void *data)
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
 
+  process_init(snode->ptid);
 
   /* Create page for command line argument and argument address. */
   success = load (procname, &if_.eip, &if_.esp);
@@ -203,10 +225,27 @@ start_process (void *data)
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid)
 {
-    //while(1);
-  return -1;
+    printf("Entered process_wait\n");
+    struct process *proc;
+    struct child_node *child;
+    int status  = -1;
+    proc = thread_current()->proc;
+    lock_acquire(&proc->lock);
+    child = process_search_child(proc, child_tid);
+    if(child)
+    {
+        if(!child->status)
+        {
+            printf("waiting on cond wati\n");
+            cond_wait(&proc->cond, &proc->lock);
+        }
+        status = *child->status;
+        process_remove_child(child);
+    }
+    lock_release(&proc->lock);
+    return status;
 }
 
 /* Free the current process's resources. */
@@ -588,7 +627,8 @@ install_page (void *upage, void *kpage, bool writable)
 
 
 /* This following function prepares the stack for user. */
-static char* push_args(char *src, char *dest)
+static char*
+push_args(char *src, char *dest)
 {
     char *cur = NULL;
     int32_t argc = 0;
@@ -632,4 +672,93 @@ static char* push_args(char *src, char *dest)
 
     palloc_free_page(addr);
     return cur;
+}
+
+void
+process_init(tid_t ptid)
+{
+    struct process *proc;
+    proc = malloc(sizeof(struct process));
+    if(!proc)
+    {
+        printf("Cannot allocated parent process node\n");
+        ASSERT(0);
+    }
+    proc->ptid = ptid;
+    lock_init(&proc->lock);
+    cond_init(&proc->cond);
+    list_init(&proc->list);
+    proc->ref_count++;
+    thread_current()->proc = proc;
+}
+
+static void
+process_insert_child(tid_t tid)
+{
+    struct process *proc = thread_current()->proc;
+    struct child_node *child;
+    ASSERT(proc);
+    child = (struct child_node*)malloc(sizeof(struct child_node));
+    if(!child)
+    {
+        ASSERT(0);
+    }
+    child->tid = tid;
+    child->status = NULL;
+    lock_acquire(&proc->lock);
+    list_push_back(&proc->list, &child->elem);
+    lock_release(&proc->lock);
+}
+
+static struct
+child_node* process_search_child(struct process *proc, tid_t tid)
+{
+    struct list_elem *elem;
+    for(elem = list_begin(&proc->list);
+        elem != list_end(&proc->list);
+        elem = list_next(elem))
+    {
+        struct child_node *child = list_entry(elem, struct child_node, elem);
+        if(child->tid == tid)
+            return child;
+    }
+    return NULL;
+}
+
+static void
+process_remove_child(struct child_node *child)
+{
+    struct process *proc;
+    proc = thread_current()->proc;
+    ASSERT(proc);
+    if(child)
+    {
+        list_remove(&child->elem);
+        if(child->status)
+            free(child->status);
+        free(child);
+    }
+}
+
+void
+process_notify(int status)
+{
+    struct thread *p_thread;
+    enum intr_level old_level = intr_disable();
+    p_thread = thread_search(thread_current()->proc->ptid);
+    if(p_thread)
+    {
+        struct process *proc = p_thread->proc;
+        struct child_node *child;
+        lock_acquire(&proc->lock);
+        child = process_search_child(proc, thread_current()->tid);
+        if(child)
+        {
+            child->status = malloc(sizeof(int));
+            *child->status = status;
+            cond_signal(&proc->cond, &proc->lock);
+        }
+        lock_release(&proc->lock);
+    }
+    intr_set_level(old_level);
 }

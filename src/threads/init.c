@@ -127,6 +127,10 @@ main (void)
   filesys_init (format_filesys);
 #endif
 
+#ifdef USERPROG
+  process_init(thread_current()->tid);
+#endif
+
   printf ("Boot complete.\n");
   
   /* Run actions specified on kernel command line. */
@@ -285,7 +289,7 @@ run_task (char **argv)
   
   printf ("Executing '%s':\n", task);
 #ifdef USERPROG
-  process_wait (process_execute (task));
+  printf("process wait = %d\n", process_wait (process_execute (task)));
 #else
   run_test (task);
 #endif
