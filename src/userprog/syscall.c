@@ -9,6 +9,7 @@
 #include "devices/input.h"
 #include "userprog/process.h"
 #include "filesys/filesys.h"
+#include "filesys/file.h"
 #include "filesys/fd.h"
 
 
@@ -37,6 +38,10 @@ static void syscall_open(struct argv *args, uint32_t *eax);
 static void syscall_size(struct argv *args, uint32_t *eax);
 static void syscall_read(struct argv *args, uint32_t *eax);
 static void syscall_write(struct argv *args, uint32_t *eax);
+static void syscall_seek(struct argv *args, uint32_t *eax UNUSED);
+static void syscall_tell(struct argv *args, uint32_t *eax);
+static void syscall_close(struct argv *args, uint32_t *eax UNUSED);
+
 
 static
 struct syscall syscall_tbl[] =
@@ -51,9 +56,9 @@ struct syscall syscall_tbl[] =
     {syscall_size,              1},
     {syscall_read,              3},
     {syscall_write,             3},
-    {NULL,                      0},
-    {NULL,                      0},
-    {NULL,                      0},
+    {syscall_seek,              2},
+    {syscall_tell,              1},
+    {syscall_close,             1},
     {NULL,                      0},
     {NULL,                      0},
     {NULL,                      0},
@@ -121,6 +126,66 @@ syscall_exec(struct argv *args, uint32_t *eax)
     *eax = process_execute_sync(filename);
 
 }
+
+static void
+syscall_create(struct argv *args, uint32_t *eax)
+{
+    const char *name;
+    off_t size;
+
+    name = (const char*)args->arg[0];
+    if(!name
+    || !is_user_vaddr(name)
+    || !is_user_vaddr(name + strlen(name)))
+        thread_exit();
+    size = (off_t)args->arg[1];
+
+    *eax = filesys_create (name, size);
+}
+
+static void
+syscall_remove(struct argv *args, uint32_t *eax)
+{
+    const char *name;
+    name = (const char*)args->arg[0];
+    if(!name
+    || !is_user_vaddr(name)
+    || !is_user_vaddr(name + strlen(name)))
+        thread_exit();
+    *eax = filesys_remove(name);
+}
+
+static void
+syscall_open(struct argv *args, uint32_t *eax)
+{
+    const char *name;
+    struct file *file;
+    name = (const char*)args->arg[0];
+    if(!name
+    ||!is_user_vaddr(name)
+    || !is_user_vaddr(name + strlen(name)))
+        thread_exit();
+    file = filesys_open(name);
+    if(!file)
+        *eax = FD_INVALID;
+    else
+        *eax = fd_insert(file);
+}
+
+static void
+syscall_size(struct argv *args, uint32_t *eax)
+{
+    int fd;
+    struct file *file;
+    fd = (int)args->arg[0];
+    if(fd < FD_MIN || fd > FD_MAX)
+        *eax = -1;
+    file = fd_search(fd);
+    if(!file)
+        *eax = -1;
+    else *eax = file_length(file);
+}
+
 
 static void
 syscall_read(struct argv *args, uint32_t *eax)
@@ -200,60 +265,53 @@ syscall_write(struct argv *args, uint32_t *eax)
 }
 
 static void
-syscall_create(struct argv *args, uint32_t *eax)
+syscall_seek(struct argv *args, uint32_t *eax UNUSED)
 {
-    const char *name;
-    off_t size;
-
-    name = (const char*)args->arg[0];
-    if(!name
-    || !is_user_vaddr(name)
-    || !is_user_vaddr(name + strlen(name)))
-        thread_exit();
-    size = (off_t)args->arg[1];
-
-    *eax = filesys_create (name, size);
-}
-
-static void
-syscall_remove(struct argv *args, uint32_t *eax)
-{
-    const char *name;
-    name = (const char*)args->arg[0];
-    if(!name
-    || !is_user_vaddr(name)
-    || !is_user_vaddr(name + strlen(name)))
-        thread_exit();
-    *eax = filesys_remove(name);
-}
-
-static void
-syscall_open(struct argv *args, uint32_t *eax)
-{
-    const char *name;
+    int fd;
+    unsigned position;
     struct file *file;
-    name = (const char*)args->arg[0];
-    if(!name
-    ||!is_user_vaddr(name)
-    || !is_user_vaddr(name + strlen(name)))
+
+    fd = (int)args->arg[0];
+    if(fd < FD_MIN || fd > FD_MAX)
         thread_exit();
-    file = filesys_open(name);
+
+    position = (unsigned)args->arg[1];
+    file = fd_search(fd);
     if(!file)
-        *eax = FD_INVALID;
+        thread_exit();
     else
-        *eax = fd_insert(file);
+        file_seek(file, position);
 }
 
 static void
-syscall_size(struct argv *args, uint32_t *eax)
+syscall_tell(struct argv *args, uint32_t *eax)
 {
     int fd;
     struct file *file;
     fd = (int)args->arg[0];
     if(fd < FD_MIN || fd > FD_MAX)
-        *eax = -1;
+        thread_exit();
     file = fd_search(fd);
+    *eax = 0;
     if(!file)
-        *eax = -1;
-    else *eax = file_length(file);
+        thread_exit();
+    else
+        *eax = file_tell(file);
+}
+
+static void
+syscall_close(struct argv *args, uint32_t *eax UNUSED)
+{
+    int fd;
+    struct file *file;
+
+    fd = (int)args->arg[0];
+    if(fd < FD_MIN || fd > FD_MAX)
+        thread_exit();
+
+    file = fd_remove(fd);
+    if(!file)
+        thread_exit();
+    else
+        file_close(file);
 }
