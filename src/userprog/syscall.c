@@ -26,6 +26,8 @@ struct syscall
     int argc;
 };
 
+static bool is_valid_user_vaddr(const void *addr);
+static void force_exit(int status);
 static void syscall_handler (struct intr_frame *);
 static int syscall_get(intptr_t *num);
 static void syscall_get_args(intptr_t *addr, int argc, struct argv *args);
@@ -69,6 +71,19 @@ struct syscall syscall_tbl[] =
     {NULL,                      0}
 };
 
+static bool
+is_valid_user_vaddr(const void *addr)
+{
+    return (is_user_vaddr(addr));
+}
+
+static void
+force_exit(int status)
+{
+    process_notify(status);
+    thread_exit();
+}
+
 void
 syscall_init (void) 
 {
@@ -89,8 +104,8 @@ syscall_handler (struct intr_frame *f)
 static int
 syscall_get(intptr_t *num)
 {
-    if(!is_user_vaddr(num) || *num < SYS_HALT || *num > SYS_INUMBER)
-        thread_exit();
+    if(!is_valid_user_vaddr(num) || *num < SYS_HALT || *num > SYS_INUMBER)
+        force_exit(-1);
     return *num;
 }
 
@@ -100,8 +115,8 @@ syscall_get_args(intptr_t *addr, int argc, struct argv *args)
     int i;
     for(i = 1; i <= argc; ++i)
     {
-        if(!is_user_vaddr(addr + i))
-            thread_exit();
+        if(!is_valid_user_vaddr(addr + i))
+            force_exit(-1);
         args->arg[i - 1] = (void*)*(addr + i);
     }
 }
@@ -116,9 +131,9 @@ static void
 syscall_exit(struct argv *args, uint32_t *eax)
 {
     *eax = (uint32_t)args->arg[0];
-    process_notify(*eax);
     printf ("%s: exit(%d)\n", thread_current()->name, *eax);
-    thread_exit ();
+    //process_notify(0);
+    force_exit(*eax);
 }
 
 static void
@@ -144,11 +159,11 @@ syscall_create(struct argv *args, uint32_t *eax)
 
     name = (const char*)args->arg[0];
     if(!name
-    || !is_user_vaddr(name)
-    || !is_user_vaddr(name + strlen(name)))
-        thread_exit();
-    size = (off_t)args->arg[1];
+    || !is_valid_user_vaddr(name)
+    || !is_valid_user_vaddr(name + strlen(name)))
+        force_exit(-1);
 
+    size = (off_t)args->arg[1];
     *eax = filesys_create (name, size);
 }
 
@@ -156,11 +171,13 @@ static void
 syscall_remove(struct argv *args, uint32_t *eax)
 {
     const char *name;
+
     name = (const char*)args->arg[0];
     if(!name
-    || !is_user_vaddr(name)
-    || !is_user_vaddr(name + strlen(name)))
-        thread_exit();
+    || !is_valid_user_vaddr(name)
+    || !is_valid_user_vaddr(name + strlen(name)))
+        force_exit(-1);
+
     *eax = filesys_remove(name);
 }
 
@@ -169,11 +186,13 @@ syscall_open(struct argv *args, uint32_t *eax)
 {
     const char *name;
     struct file *file;
+
     name = (const char*)args->arg[0];
     if(!name
-    ||!is_user_vaddr(name)
-    || !is_user_vaddr(name + strlen(name)))
-        thread_exit();
+    ||!is_valid_user_vaddr(name)
+    || !is_valid_user_vaddr(name + strlen(name)))
+        force_exit(-1);
+
     file = filesys_open(name);
     if(!file)
         *eax = FD_INVALID;
@@ -187,14 +206,15 @@ syscall_size(struct argv *args, uint32_t *eax)
     int fd;
     struct file *file;
     fd = (int)args->arg[0];
-    if(fd < FD_MIN || fd > FD_MAX)
-        *eax = -1;
-    file = fd_search(fd);
-    if(!file)
-        *eax = -1;
-    else *eax = file_length(file);
-}
+    *eax = 0;
 
+    if(fd >= FD_MIN && fd <= FD_MAX)
+    {
+        struct file *file = fd_search(fd);
+        if(file)
+            *eax = file_length(file);
+    }
+}
 
 static void
 syscall_read(struct argv *args, uint32_t *eax)
@@ -204,36 +224,29 @@ syscall_read(struct argv *args, uint32_t *eax)
     unsigned size;
 
     fd = (int)args->arg[0];
-    if(fd < STDIN_FILENO)
-        thread_exit();
-
     buff = (char*)args->arg[1];
     size = (unsigned)args->arg[2];
 
     if(!buff
-    || !is_user_vaddr(buff)
-    || !is_user_vaddr(buff + size))
-        thread_exit();
+    || !is_valid_user_vaddr(buff)
+    || !is_valid_user_vaddr(buff + size))
+        force_exit(-1);
 
-    if(fd == STDOUT_FILENO)
-        *eax = 0;
-    else if(fd == STDIN_FILENO)
+    *eax = 0;
+
+    if(fd == STDIN_FILENO)
     {
         if(size >= sizeof(uint8_t))
         {
             buff[0] = input_getc();
             *eax = sizeof(uint8_t);
         }
-        else
-            *eax = 0;
     }
-    else
+    else if(fd != STDOUT_FILENO)
     {
         struct file *file = fd_search(fd);
-        if(!file)
-            *eax = 0;
-        else
-            *eax = file_read(file, buff, size);
+        if(file)
+           *eax = file_read(file, buff, size);
     }
 }
 
@@ -245,30 +258,25 @@ syscall_write(struct argv *args, uint32_t *eax)
     unsigned size;
 
     fd = (int)args->arg[0];
-    if(fd < STDIN_FILENO)
-        thread_exit();
-
     buff = (const char*)args->arg[1];
     size = (unsigned)args->arg[2];
 
     if(!buff
-    || !is_user_vaddr(buff)
-    || !is_user_vaddr(buff + size))
-        thread_exit();
+    || !is_valid_user_vaddr(buff)
+    || !is_valid_user_vaddr(buff + size))
+        force_exit(-1);
 
-    if(fd == STDIN_FILENO)
-        *eax = 0;
-    else if(fd == STDOUT_FILENO)
+    *eax = 0;
+
+    if(fd == STDOUT_FILENO)
     {
         putbuf(buff, size);
         *eax = size;
     }
-    else
+    else if(fd != STDIN_FILENO)
     {
         struct file *file = fd_search(fd);
-        if(!file)
-            *eax = 0;
-        else
+        if(file)
             *eax = file_write(file, buff, size);
     }
 }
@@ -277,50 +285,38 @@ static void
 syscall_seek(struct argv *args, uint32_t *eax UNUSED)
 {
     int fd;
-    unsigned position;
-    struct file *file;
-
     fd = (int)args->arg[0];
-    if(fd < FD_MIN || fd > FD_MAX)
-        thread_exit();
-
-    position = (unsigned)args->arg[1];
-    file = fd_search(fd);
-    if(!file)
-        thread_exit();
-    else
-        file_seek(file, position);
+    if(fd >= FD_MIN && fd <= FD_MAX)
+    {
+        unsigned position = (unsigned)args->arg[1];
+        struct file *file = fd_search(fd);
+        if(file)
+            file_seek(file, position);
+    }
 }
 
 static void
 syscall_tell(struct argv *args, uint32_t *eax)
 {
     int fd;
-    struct file *file;
     fd = (int)args->arg[0];
-    if(fd < FD_MIN || fd > FD_MAX)
-        thread_exit();
-    file = fd_search(fd);
-    *eax = 0;
-    if(!file)
-        thread_exit();
-    else
-        *eax = file_tell(file);
+    *eax = -1;
+    if(fd >= FD_MIN || fd <= FD_MAX)
+    {
+        struct file *file = fd_search(fd);
+        if(file)
+            *eax = file_tell(file);
+    }
 }
 
 static void
 syscall_close(struct argv *args, uint32_t *eax UNUSED)
 {
     int fd;
-    struct file *file;
-
     fd = (int)args->arg[0];
-    if(fd < FD_MIN || fd > FD_MAX)
-        thread_exit();
-
-    file = fd_remove(fd);
-    if(!file)
-        thread_exit();
-    else
-        file_close(file);
+    if(fd >= FD_MIN && fd <= FD_MAX)
+    {
+        struct file *file = fd_remove(fd);
+            file_close(file);
+    }
 }
