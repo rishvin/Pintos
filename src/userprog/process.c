@@ -642,6 +642,11 @@ push_args(char *src, char *dest)
     addr= palloc_get_page(0);
     addr[idx] = 0;
 
+    cur = thread_current()->name;
+    dest -= strlen(cur) + 1;
+    strlcpy(dest, cur, strlen(cur) + 1);
+    addr[argc++] = (uintptr_t)dest;
+
     /* Copy the bytes to page and also keep track of the start of each argument. */
     while((cur = strtok_r(NULL, " ", &src)))
     {
@@ -650,18 +655,13 @@ push_args(char *src, char *dest)
         addr[argc++] = (uintptr_t)dest;
     }
 
-    cur = thread_current()->name;
-    dest -= strlen(cur) + 1;
-    strlcpy(dest, cur, strlen(cur) + 1);
-    addr[argc++] = (uintptr_t)dest;
-
     /* Align to the word boundary. */
     cur = align_word(dest);
     cur = get_prev_addr(cur);
     *(uintptr_t*)cur = 0;
 
     /* Start pushing the address of arguments. */
-    for(idx = 0; idx < argc; ++idx)
+    for(idx = argc - 1; idx >= 0; --idx)
     {
         cur = get_prev_addr(cur);
         *(uintptr_t*)cur = (uintptr_t)addr[idx];
