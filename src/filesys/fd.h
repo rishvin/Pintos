@@ -8,14 +8,23 @@
 #ifndef PINTOS_SRC_FILESYS_FD_H_
 #define PINTOS_SRC_FILESYS_FD_H_
 
+#include <bitmap.h>
+#include <hash.h>
+
 #define FD_INVALID      -1
 #define FD_MIN          2
 #define FD_MAX          PGSIZE
 
-void fd_init(void);
-void fd_destroy(void);
-int fd_insert(struct file *file);
-struct file* fd_remove(int fd);
-struct file* fd_search(int fd);
+struct fd_node
+{
+    struct bitmap *fd_bm;
+    struct hash fd_hash;
+};
+
+void fd_init(struct fd_node *fd_node);
+void fd_destroy(struct fd_node *fd_node);
+int fd_insert(struct fd_node *fd_node, struct file *file);
+struct file* fd_remove(struct fd_node *fd_node, int fd);
+struct file* fd_search(struct fd_node *fd_node, int fd);
 
 #endif /* PINTOS_SRC_FILESYS_FD_H_ */

@@ -8,6 +8,7 @@
 #include "devices/shutdown.h"
 #include "devices/input.h"
 #include "userprog/process.h"
+#include "userprog/pagedir.h"
 #include "filesys/filesys.h"
 #include "filesys/file.h"
 #include "filesys/fd.h"
@@ -74,7 +75,7 @@ struct syscall syscall_tbl[] =
 static bool
 is_valid_user_vaddr(const void *addr)
 {
-    return (is_user_vaddr(addr));
+    return is_user_vaddr(addr) && pagedir_get_page(thread_current()->pagedir, addr);
 }
 
 static void
@@ -138,6 +139,8 @@ static void
 syscall_exec(struct argv *args, uint32_t *eax)
 {
     const char *filename = (const char*)args->arg[0];
+    if(!is_valid_user_vaddr(filename))
+        force_exit(-1);
     *eax = process_execute_sync(filename);
 
 }
@@ -195,20 +198,19 @@ syscall_open(struct argv *args, uint32_t *eax)
     if(!file)
         *eax = FD_INVALID;
     else
-        *eax = fd_insert(file);
+        *eax = fd_insert(&thread_current()->proc->fd_node, file);
 }
 
 static void
 syscall_size(struct argv *args, uint32_t *eax)
 {
     int fd;
-    struct file *file;
     fd = (int)args->arg[0];
     *eax = 0;
 
     if(fd >= FD_MIN && fd <= FD_MAX)
     {
-        struct file *file = fd_search(fd);
+        struct file *file = fd_search(&thread_current()->proc->fd_node, fd);
         if(file)
             *eax = file_length(file);
     }
@@ -242,7 +244,7 @@ syscall_read(struct argv *args, uint32_t *eax)
     }
     else if(fd != STDOUT_FILENO)
     {
-        struct file *file = fd_search(fd);
+        struct file *file = fd_search(&thread_current()->proc->fd_node, fd);
         if(file)
            *eax = file_read(file, buff, size);
     }
@@ -273,7 +275,7 @@ syscall_write(struct argv *args, uint32_t *eax)
     }
     else if(fd != STDIN_FILENO)
     {
-        struct file *file = fd_search(fd);
+        struct file *file = fd_search(&thread_current()->proc->fd_node, fd);
         if(file)
             *eax = file_write(file, buff, size);
     }
@@ -287,7 +289,7 @@ syscall_seek(struct argv *args, uint32_t *eax UNUSED)
     if(fd >= FD_MIN && fd <= FD_MAX)
     {
         unsigned position = (unsigned)args->arg[1];
-        struct file *file = fd_search(fd);
+        struct file *file = fd_search(&thread_current()->proc->fd_node, fd);
         if(file)
             file_seek(file, position);
     }
@@ -301,7 +303,7 @@ syscall_tell(struct argv *args, uint32_t *eax)
     *eax = -1;
     if(fd >= FD_MIN || fd <= FD_MAX)
     {
-        struct file *file = fd_search(fd);
+        struct file *file = fd_search(&thread_current()->proc->fd_node, fd);
         if(file)
             *eax = file_tell(file);
     }
@@ -314,7 +316,7 @@ syscall_close(struct argv *args, uint32_t *eax UNUSED)
     fd = (int)args->arg[0];
     if(fd >= FD_MIN && fd <= FD_MAX)
     {
-        struct file *file = fd_remove(fd);
+        struct file *file = fd_remove(&thread_current()->proc->fd_node, fd);
         if(file)
             file_close(file);
     }

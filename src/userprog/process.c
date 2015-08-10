@@ -45,7 +45,7 @@ inline static void spawn_node_awake(struct spawn_node *snode);
 /* Function related to wait. */
 static void process_insert_child(tid_t ctid);
 static void process_remove_child(struct child_node *child);
-static struct child_node* process_search_child(struct process *proc, tid_t tid);
+static struct child_node* process_search_child(struct process_child_node *child_node, tid_t tid);
 
 static tid_t process_execute_(const char *file_name, bool sync);
 
@@ -174,6 +174,9 @@ start_process (void *data)
   if(success)
       if_.esp = push_args(snode->args, if_.esp);
 
+  if(!if_.esp)
+      success = false;
+
   /* If load failed, quit. */
   if(snode->args && snode->args[0] != '\0')
       snode->args = snode->args - strlen(procname) - 1;
@@ -227,7 +230,7 @@ start_process (void *data)
 int
 process_wait (tid_t child_tid)
 {
-    struct process *proc;
+    struct process_child_node *childs;
     struct child_node *child;
     int status  = -1;
 
@@ -235,19 +238,19 @@ process_wait (tid_t child_tid)
     || thread_current()->tid == child_tid)
         return status;
 
-    proc = thread_current()->proc;
-    lock_acquire(&proc->lock);
-    child = process_search_child(proc, child_tid);
+    childs = &thread_current()->proc->childs;
+    lock_acquire(&childs->lock);
+    child = process_search_child(childs, child_tid);
     if(child)
     {
         if(!child->status)
         {
-            cond_wait(&proc->cond, &proc->lock);
+            cond_wait(&childs->cond, &childs->lock);
         }
         status = *child->status;
         process_remove_child(child);
     }
-    lock_release(&proc->lock);
+    lock_release(&childs->lock);
     return status;
 }
 
@@ -639,7 +642,10 @@ push_args(char *src, char *dest)
     uintptr_t argv;
     uintptr_t *addr;
 
-    addr= palloc_get_page(0);
+    addr = palloc_get_page(0);
+    if(!addr)
+        return NULL;
+
     addr[idx] = 0;
 
     cur = thread_current()->name;
@@ -683,44 +689,67 @@ void
 process_init(tid_t ptid)
 {
     struct process *proc;
+    struct process_child_node *childs;
+    struct fd_node *fd_node;
+
     proc = malloc(sizeof(struct process));
     if(!proc)
     {
         printf("Cannot allocated parent process node\n");
         ASSERT(0);
     }
-    proc->ptid = ptid;
-    lock_init(&proc->lock);
-    cond_init(&proc->cond);
-    list_init(&proc->list);
-    proc->ref_count++;
+
+    childs = &proc->childs;
+    fd_node = &proc->fd_node;
+
+    childs->ptid = ptid;
+    lock_init(&childs->lock);
+    cond_init(&childs->cond);
+    list_init(&childs->list);
+
+    fd_init(fd_node);
+
     thread_current()->proc = proc;
+}
+
+void process_destroy(void)
+{
+    struct process *proc;
+    struct fd_node *fd_node;
+
+    proc = thread_current()->proc;
+    fd_node = &proc->fd_node;
+    fd_destroy(&proc->fd_node);
+    free(proc);
 }
 
 static void
 process_insert_child(tid_t tid)
 {
-    struct process *proc = thread_current()->proc;
+    struct process_child_node *childs;
     struct child_node *child;
-    ASSERT(proc);
+
+    childs = &thread_current()->proc->childs;
+
     child = (struct child_node*)malloc(sizeof(struct child_node));
     if(!child)
     {
         ASSERT(0);
     }
+
     child->tid = tid;
     child->status = NULL;
-    lock_acquire(&proc->lock);
-    list_push_back(&proc->list, &child->elem);
-    lock_release(&proc->lock);
+    lock_acquire(&childs->lock);
+    list_push_back(&childs->list, &child->elem);
+    lock_release(&childs->lock);
 }
 
 static struct child_node*
-process_search_child(struct process *proc, tid_t tid)
+process_search_child(struct process_child_node *childs, tid_t tid)
 {
     struct list_elem *elem;
-    for(elem = list_begin(&proc->list);
-        elem != list_end(&proc->list);
+    for(elem = list_begin(&childs->list);
+        elem != list_end(&childs->list);
         elem = list_next(elem))
     {
         struct child_node *child = list_entry(elem, struct child_node, elem);
@@ -733,9 +762,6 @@ process_search_child(struct process *proc, tid_t tid)
 static void
 process_remove_child(struct child_node *child)
 {
-    struct process *proc;
-    proc = thread_current()->proc;
-    ASSERT(proc);
     if(child)
     {
         list_remove(&child->elem);
@@ -757,20 +783,20 @@ process_notify(int status)
     printf ("%s: exit(%d)\n", thread_current()->name, status);
 
     old_level = intr_disable();
-    p_thread = thread_search(thread_current()->proc->ptid);
+    p_thread = thread_search(thread_current()->proc->childs.ptid);
     if(p_thread)
     {
-        struct process *proc = p_thread->proc;
+        struct process_child_node *childs = &p_thread->proc->childs;
         struct child_node *child;
-        lock_acquire(&proc->lock);
-        child = process_search_child(proc, thread_current()->tid);
+        lock_acquire(&childs->lock);
+        child = process_search_child(childs, thread_current()->tid);
         if(child)
         {
             child->status = malloc(sizeof(int));
             *child->status = status;
-            cond_signal(&proc->cond, &proc->lock);
+            cond_signal(&childs->cond, &childs->lock);
         }
-        lock_release(&proc->lock);
+        lock_release(&childs->lock);
     }
     intr_set_level(old_level);
 }

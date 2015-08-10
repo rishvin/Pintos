@@ -6,6 +6,7 @@
 #include <stdint.h>
 #ifdef USERPROG
 #include "threads/synch.h"
+#include "filesys/fd.h"
 #endif
 
 struct lock;
@@ -41,14 +42,20 @@ struct thread_lock
 
 /* Used by parent thread to hold child process relationship. */
 #ifdef USERPROG
-struct process
+struct process_child_node
 {
     struct lock lock;
     struct condition cond;
     struct list list;
     tid_t ptid;
-    uint32_t ref_count;
 };
+
+struct process
+{
+    struct process_child_node childs;
+    struct fd_node fd_node;
+};
+
 #endif
 
 /* A kernel thread or user process.
