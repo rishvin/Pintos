@@ -227,10 +227,14 @@ start_process (void *data)
 int
 process_wait (tid_t child_tid)
 {
-    printf("Entered process_wait\n");
     struct process *proc;
     struct child_node *child;
     int status  = -1;
+
+    if(child_tid == -1
+    || thread_current()->tid == child_tid)
+        return status;
+
     proc = thread_current()->proc;
     lock_acquire(&proc->lock);
     child = process_search_child(proc, child_tid);
@@ -238,7 +242,6 @@ process_wait (tid_t child_tid)
     {
         if(!child->status)
         {
-            printf("waiting on cond wati\n");
             cond_wait(&proc->cond, &proc->lock);
         }
         status = *child->status;
@@ -639,7 +642,7 @@ push_args(char *src, char *dest)
     addr= palloc_get_page(0);
     addr[idx] = 0;
 
-    // Copy the bytes to page and also keep track of the start of each argument.
+    /* Copy the bytes to page and also keep track of the start of each argument. */
     while((cur = strtok_r(NULL, " ", &src)))
     {
         dest -= strlen(cur) + 1;
@@ -652,11 +655,13 @@ push_args(char *src, char *dest)
     strlcpy(dest, cur, strlen(cur) + 1);
     addr[argc++] = (uintptr_t)dest;
 
-    cur = align_word(dest); // Allign to the word boundary.
+    /* Align to the word boundary. */
+    cur = align_word(dest);
     cur = get_prev_addr(cur);
-    *(uintptr_t*)cur = 0; // Push sentinal.
+    *(uintptr_t*)cur = 0;
 
-    for(idx = 0; idx < argc; ++idx) // Start pushing the address of arguments.
+    /* Start pushing the address of arguments. */
+    for(idx = 0; idx < argc; ++idx)
     {
         cur = get_prev_addr(cur);
         *(uintptr_t*)cur = (uintptr_t)addr[idx];
@@ -664,11 +669,11 @@ push_args(char *src, char *dest)
 
     argv = (uintptr_t)cur;
     cur = (char*)get_prev_addr(cur);
-    *(uintptr_t*)cur = (uintptr_t)argv; // Push the address of the beginning of arguments.
+    *(uintptr_t*)cur = (uintptr_t)argv;
     cur = (char*)get_prev_addr(cur);
-    *(uintptr_t*)cur = (uintptr_t)argc; // Push the argument count.
+    *(uintptr_t*)cur = (uintptr_t)argc;
     cur = (char*)get_prev_addr(cur);
-    *(uintptr_t*)cur = 0;  // Push sentinal.
+    *(uintptr_t*)cur = 0;
 
     palloc_free_page(addr);
     return cur;
@@ -710,8 +715,8 @@ process_insert_child(tid_t tid)
     lock_release(&proc->lock);
 }
 
-static struct
-child_node* process_search_child(struct process *proc, tid_t tid)
+static struct child_node*
+process_search_child(struct process *proc, tid_t tid)
 {
     struct list_elem *elem;
     for(elem = list_begin(&proc->list);
@@ -740,6 +745,9 @@ process_remove_child(struct child_node *child)
     }
 }
 
+/* This function notifies parent process about the exit status.
+   If parent process has exited before the call is made then this function does nothing.
+ */
 void
 process_notify(int status)
 {

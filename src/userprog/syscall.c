@@ -32,6 +32,7 @@ static void syscall_get_args(intptr_t *addr, int argc, struct argv *args);
 static void syscall_halt(struct argv *args, uint32_t *eax);
 static void syscall_exit(struct argv *args, uint32_t *eax);
 static void syscall_exec(struct argv *args, uint32_t *eax);
+static void syscall_wait(struct argv *args, uint32_t *eax);
 static void syscall_create(struct argv *args, uint32_t *eax);
 static void syscall_remove(struct argv *args, uint32_t *eax);
 static void syscall_open(struct argv *args, uint32_t *eax);
@@ -49,7 +50,7 @@ struct syscall syscall_tbl[] =
     {syscall_halt,              0},
     {syscall_exit,              1},
     {syscall_exec,              1},
-    {NULL,                      0},
+    {syscall_wait,              1},
     {syscall_create,            2},
     {syscall_remove,            1},
     {syscall_open,              1},
@@ -126,6 +127,13 @@ syscall_exec(struct argv *args, uint32_t *eax)
     const char *filename = (const char*)args->arg[0];
     *eax = process_execute_sync(filename);
 
+}
+
+static void
+syscall_wait(struct argv *args, uint32_t *eax)
+{
+    tid_t pid = (tid_t)args->arg[0];
+    *eax = process_wait(pid);
 }
 
 static void
