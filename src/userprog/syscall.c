@@ -131,8 +131,6 @@ static void
 syscall_exit(struct argv *args, uint32_t *eax)
 {
     *eax = (uint32_t)args->arg[0];
-    printf ("%s: exit(%d)\n", thread_current()->name, *eax);
-    //process_notify(0);
     force_exit(*eax);
 }
 
@@ -317,6 +315,7 @@ syscall_close(struct argv *args, uint32_t *eax UNUSED)
     if(fd >= FD_MIN && fd <= FD_MAX)
     {
         struct file *file = fd_remove(fd);
+        if(file)
             file_close(file);
     }
 }

@@ -752,7 +752,11 @@ void
 process_notify(int status)
 {
     struct thread *p_thread;
-    enum intr_level old_level = intr_disable();
+    enum intr_level old_level;
+
+    printf ("%s: exit(%d)\n", thread_current()->name, status);
+
+    old_level = intr_disable();
     p_thread = thread_search(thread_current()->proc->ptid);
     if(p_thread)
     {
