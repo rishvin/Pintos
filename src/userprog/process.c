@@ -167,8 +167,6 @@ start_process (void *data)
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
 
-  process_init(snode->ptid);
-
   /* Create page for command line argument and argument address. */
   success = load (procname, &if_.eip, &if_.esp);
   if(success)
@@ -183,8 +181,8 @@ start_process (void *data)
   else
       snode->args = snode->args - strlen(procname);
 
+  process_init(snode->ptid);
   palloc_free_page (snode->args);
-
   if (!success)
   {
       if(spawn_node_is_sync_set(snode))
@@ -685,41 +683,50 @@ push_args(char *src, char *dest)
     return cur;
 }
 
-void
+/* Initialized the process,
+ * In case of failure, cleanup activity will be done by process_destroy
+ * which is been called from thread_exit()
+ */
+bool
 process_init(tid_t ptid)
 {
     struct process *proc;
     struct process_child_node *childs;
-    struct fd_node *fd_node;
 
     proc = malloc(sizeof(struct process));
     if(!proc)
-    {
-        printf("Cannot allocated parent process node\n");
-        ASSERT(0);
-    }
+        return false;
+
+    //proc->exe = filesys_open(thread_current()->name);
+    //if(!proc->exe)
+      //  return false;
+
+    //file_deny_write(proc->exe);
 
     childs = &proc->childs;
-    fd_node = &proc->fd_node;
 
     childs->ptid = ptid;
     lock_init(&childs->lock);
     cond_init(&childs->cond);
     list_init(&childs->list);
 
-    fd_init(fd_node);
+    if(!fd_init(&proc->fd_node))
+        return false;
 
     thread_current()->proc = proc;
+    return true;
 }
 
 void process_destroy(void)
 {
     struct process *proc;
-    struct fd_node *fd_node;
-
+    if(!proc)
+        return;
     proc = thread_current()->proc;
-    fd_node = &proc->fd_node;
-    fd_destroy(&proc->fd_node);
+    if(!proc->exe)
+        return;
+    //file_allow_write(proc->exe);
+    fd_destroy(&proc->fd_node, file_close);
     free(proc);
 }
 

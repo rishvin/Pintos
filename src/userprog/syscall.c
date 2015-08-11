@@ -198,7 +198,12 @@ syscall_open(struct argv *args, uint32_t *eax)
     if(!file)
         *eax = FD_INVALID;
     else
-        *eax = fd_insert(&thread_current()->proc->fd_node, file);
+    {
+        int fd = fd_insert(&thread_current()->proc->fd_node, file);
+        if(fd == FD_INVALID)
+            file_close(file);
+        *eax = fd;
+    }
 }
 
 static void

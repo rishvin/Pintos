@@ -54,6 +54,7 @@ struct process
 {
     struct process_child_node childs;
     struct fd_node fd_node;
+    struct file *exe;
 };
 
 #endif

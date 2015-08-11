@@ -13,7 +13,9 @@
 
 #define FD_INVALID      -1
 #define FD_MIN          2
-#define FD_MAX          PGSIZE
+#define FD_MAX          128
+
+typedef void fd_destructor(struct file *file);
 
 struct fd_node
 {
@@ -21,8 +23,8 @@ struct fd_node
     struct hash fd_hash;
 };
 
-void fd_init(struct fd_node *fd_node);
-void fd_destroy(struct fd_node *fd_node);
+bool fd_init(struct fd_node *fd_node);
+void fd_destroy(struct fd_node *fd_node, fd_destructor *destruct);
 int fd_insert(struct fd_node *fd_node, struct file *file);
 struct file* fd_remove(struct fd_node *fd_node, int fd);
 struct file* fd_search(struct fd_node *fd_node, int fd);

@@ -23,6 +23,7 @@ struct _fd_node
     int fd;
 };
 
+void fd_clean (struct hash_elem *e, void *aux);
 static unsigned fd_hash_func(const struct hash_elem *e, void *aux UNUSED);
 static bool fd_less_func(const struct hash_elem *a,
                          const struct hash_elem *b,
@@ -43,20 +44,25 @@ static bool fd_less_func (const struct hash_elem *a,
     return node_a->fd < node_b->fd;
 }
 
-void fd_init(struct fd_node *fd_node)
+bool fd_init(struct fd_node *fd_node)
 {
     fd_node->fd_bm = bitmap_create(FD_MAX);
     if(!fd_node->fd_bm)
-    {
-        ASSERT(0);
-    }
-    else hash_init(&fd_node->fd_hash, fd_hash_func, fd_less_func, NULL);
+        return false;
+    if(!hash_init(&fd_node->fd_hash, fd_hash_func, fd_less_func, NULL))
+        return false;
+    return true;
 }
 
-void fd_destroy(struct fd_node *fd_node)
+void fd_destroy(struct fd_node *fd_node, fd_destructor *destruct)
 {
+    fd_node->fd_hash.aux = destruct;
+
+    if(!fd_node->fd_bm)
+        return;
     bitmap_destroy(fd_node->fd_bm);
-    hash_destroy(&fd_node->fd_hash, NULL);
+    hash_destroy(&fd_node->fd_hash, fd_clean);
+    fd_node->fd_hash.aux = NULL;
 }
 
 int fd_insert(struct fd_node *fd_node, struct file *file)
@@ -122,4 +128,14 @@ struct file* fd_search(struct fd_node *fd_node, int fd)
     if(ret == NULL)
         return NULL;
     return hash_entry(ret, struct _fd_node, elem)->file;
+}
+
+void fd_clean (struct hash_elem *e, void *aux)
+{
+    if(aux)
+    {
+        fd_destructor *dest = (fd_destructor*)aux;
+        dest(hash_entry(e, struct _fd_node, elem)->file);
+    }
+    free(e);
 }

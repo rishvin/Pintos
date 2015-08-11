@@ -3,7 +3,7 @@
 
 #include "threads/thread.h"
 
-void process_init(tid_t ptid);
+bool process_init(tid_t ptid);
 void process_destroy(void);
 void process_notify(int status);
 tid_t process_execute (const char *file_name);
