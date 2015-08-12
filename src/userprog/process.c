@@ -23,6 +23,7 @@
 struct spawn_node
 {
     struct semaphore *sema;
+    char *arg_page;
     char *args;
     tid_t ptid;
     tid_t tid;
@@ -129,6 +130,8 @@ process_execute_(const char *file_name, bool sync)
   if (fn_copy == NULL)
     return TID_ERROR;
 
+  snode->arg_page = fn_copy;
+
   strlcpy(fn_copy, file_name, PGSIZE);
   proc_name = strtok_r(fn_copy, " ", &fn_copy);
   snode->args = fn_copy;
@@ -143,8 +146,7 @@ process_execute_(const char *file_name, bool sync)
        if(sync)
        {
            spawn_node_wait(snode);
-           if(snode->tid == TID_ERROR)
-               tid = TID_ERROR;
+           tid = snode->tid;
            spawn_node_free(snode);
        }
    }
@@ -176,34 +178,20 @@ start_process (void *data)
       success = false;
 
   /* If load failed, quit. */
-  if(snode->args && snode->args[0] != '\0')
-      snode->args = snode->args - strlen(procname) - 1;
-  else
-      snode->args = snode->args - strlen(procname);
+  if(success)
+      success = process_init(procname, snode->ptid);
+  palloc_free_page (snode->arg_page);
 
-  process_init(snode->ptid);
-  palloc_free_page (snode->args);
-  if (!success)
+  if(spawn_node_is_sync_set(snode))
   {
-      if(spawn_node_is_sync_set(snode))
-      {
-          snode->tid = -1;
-          spawn_node_awake(snode);
-      }
-      else
-          spawn_node_free(snode);
-      thread_exit ();
+      snode->tid = success ? thread_current()->tid : TID_ERROR;
+      spawn_node_awake(snode);
   }
   else
-  {
-      if(spawn_node_is_sync_set(snode))
-      {
-          snode->tid = 0;
-          spawn_node_awake(snode);
-      }
-      else
-          spawn_node_free(snode);
-  }
+      spawn_node_free(snode);
+
+  if (!success)
+      thread_exit ();
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -688,7 +676,7 @@ push_args(char *src, char *dest)
  * which is been called from thread_exit()
  */
 bool
-process_init(tid_t ptid)
+process_init(const char *exe_name, tid_t ptid)
 {
     struct process *proc;
     struct process_child_node *childs;
@@ -697,14 +685,15 @@ process_init(tid_t ptid)
     if(!proc)
         return false;
 
-    //proc->exe = filesys_open(thread_current()->name);
-    //if(!proc->exe)
-      //  return false;
-
-    //file_deny_write(proc->exe);
+    if(exe_name)
+    {
+        proc->exe = filesys_open(exe_name);
+        if(!proc->exe)
+            return false;
+        file_deny_write(proc->exe);
+    }
 
     childs = &proc->childs;
-
     childs->ptid = ptid;
     lock_init(&childs->lock);
     cond_init(&childs->cond);
@@ -720,14 +709,18 @@ process_init(tid_t ptid)
 void process_destroy(void)
 {
     struct process *proc;
-    if(!proc)
-        return;
     proc = thread_current()->proc;
-    if(!proc->exe)
-        return;
-    //file_allow_write(proc->exe);
-    fd_destroy(&proc->fd_node, file_close);
-    free(proc);
+    if(proc)
+    {
+        if(proc->exe)
+        {
+           // printf("allowing \n");
+            file_allow_write(proc->exe);
+            file_close(proc->exe);
+        }
+        fd_destroy(&proc->fd_node, file_close);
+        free(proc);
+    }
 }
 
 static void

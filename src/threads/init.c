@@ -128,7 +128,7 @@ main (void)
 #endif
 
 #ifdef USERPROG
-  process_init(thread_current()->tid);
+  process_init(NULL, thread_current()->tid);
 #endif
 
   printf ("Boot complete.\n");
